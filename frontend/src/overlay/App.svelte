@@ -13,10 +13,10 @@
   import type { OverlayStatus } from '$lib/types';
 
   // ── Constants ──
-  const NUM_BARS = 20;
+  const NUM_BARS = 12;
   const BAR_W = 2;
   const BAR_GAP = 2;
-  const CW = NUM_BARS * (BAR_W + BAR_GAP) - BAR_GAP; // 78
+  const CW = NUM_BARS * (BAR_W + BAR_GAP) - BAR_GAP; // 46
   const CH = 32;
   const UNDO_DURATION = 5000;
   const TIMER_INTERVAL = 200;
@@ -497,8 +497,10 @@
   .capsule {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
-    padding: 0 22px;
+    padding: 0 18px;
+    width: 200px;
     height: 40px;
     border-radius: 100px;
     background: rgb(28, 28, 32);
@@ -509,7 +511,6 @@
       0 0 0 0.5px rgba(255, 255, 255, 0.06),
       inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.92);
-    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
     animation: fadeIn 0.25s ease-out;
   }
 
@@ -696,12 +697,13 @@
   /* ── Waveform canvas ── */
   .waveform {
     flex-shrink: 0;
-    width: 78px;
+    width: 46px;
     height: 32px;
   }
 
   /* ── State: Recording (orange -> red gradient via --rec-progress) ── */
   .capsule.recording {
+    justify-content: flex-start;
     --rec-progress: 0;
     background: color-mix(
       in srgb,
