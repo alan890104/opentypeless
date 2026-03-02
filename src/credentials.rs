@@ -1,8 +1,8 @@
-/// Credential storage — platform-specific implementations.
-///
-/// macOS: uses the `security` CLI which inherits the calling app's keychain
-///        access without triggering extra permission dialogs.
-/// Other: uses the `keyring` crate (Windows Credential Manager, etc.).
+//! Credential storage — platform-specific implementations.
+//!
+//! macOS: uses the `security-framework` crate (direct Keychain C API calls).
+//!        API keys are never exposed in process argv.
+//! Other: uses the `keyring` crate (Windows Credential Manager, etc.).
 
 const SERVICE: &str = if cfg!(debug_assertions) { "sumi-dev" } else { "sumi" };
 
@@ -10,64 +10,40 @@ fn keychain_service(provider: &str) -> String {
     format!("{}-api-key-{}", SERVICE, provider)
 }
 
-// ── macOS: `security` CLI ──────────────────────────────────────────
+// ── macOS: `security-framework` crate ─────────────────────────────
 
 #[cfg(target_os = "macos")]
 pub fn save(provider: &str, key: &str) -> Result<(), String> {
-    let service = keychain_service(provider);
-    // Delete first to avoid "already exists" error
-    let _ = std::process::Command::new("security")
-        .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
-        .output();
-    let out = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-s", &service,
-            "-a", SERVICE,
-            "-w", key,
-            "-U",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run security CLI: {}", e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "security add-generic-password failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
+    security_framework::passwords::set_generic_password(
+        &keychain_service(provider),
+        SERVICE,
+        key.as_bytes(),
+    )
+    .map_err(|e| format!("Keychain save failed: {}", e))
 }
 
 #[cfg(target_os = "macos")]
 pub fn load(provider: &str) -> Result<String, String> {
-    let service = keychain_service(provider);
-    let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", &service, "-a", SERVICE, "-w"])
-        .output()
-        .map_err(|e| format!("Failed to run security CLI: {}", e))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        // Item not found → return empty string (not an error)
-        Ok(String::new())
+    match security_framework::passwords::get_generic_password(
+        &keychain_service(provider),
+        SERVICE,
+    ) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|e| format!("Keychain value is not valid UTF-8: {}", e)),
+        Err(e) if e.code() == -25300 => Ok(String::new()), // errSecItemNotFound
+        Err(e) => Err(format!("Keychain load failed: {}", e)),
     }
 }
 
 #[cfg(target_os = "macos")]
 pub fn delete(provider: &str) -> Result<(), String> {
-    let service = keychain_service(provider);
-    let out = std::process::Command::new("security")
-        .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
-        .output()
-        .map_err(|e| format!("Failed to run security CLI: {}", e))?;
-    if out.status.success() || String::from_utf8_lossy(&out.stderr).contains("could not be found") {
-        Ok(())
-    } else {
-        Err(format!(
-            "security delete-generic-password failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
+    match security_framework::passwords::delete_generic_password(
+        &keychain_service(provider),
+        SERVICE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(e) if e.code() == -25300 => Ok(()), // errSecItemNotFound → already gone
+        Err(e) => Err(format!("Keychain delete failed: {}", e)),
     }
 }
 

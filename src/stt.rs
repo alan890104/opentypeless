@@ -361,6 +361,14 @@ pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &r
         if region.is_empty() {
             return Err("Azure region is not configured. Please set it in Settings.".to_string());
         }
+        // Azure region only allows lowercase letters, digits, and hyphens (e.g. "westus", "east-us-2").
+        // Must not begin/end with a dash or contain consecutive dashes (RFC 952 DNS label rules).
+        if !region.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err("Azure region contains invalid characters. Use only lowercase letters, digits, and hyphens (e.g. \"westus\", \"east-us-2\").".to_string());
+        }
+        if region.starts_with('-') || region.ends_with('-') || region.contains("--") {
+            return Err("Azure region must not begin or end with a hyphen, or contain consecutive hyphens.".to_string());
+        }
         format!(
             "https://{}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1",
             region

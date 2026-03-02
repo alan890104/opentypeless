@@ -1476,11 +1476,21 @@ pub fn validate_custom_endpoint(url_str: &str) -> Result<(), String> {
         return Err("Endpoint URL has no host".to_string());
     }
 
-    // Block cloud metadata endpoints (AWS/GCP/Azure instance metadata)
+    // Block cloud metadata endpoints
+    const BLOCKED_METADATA_IPS: &[std::net::Ipv4Addr] = &[
+        std::net::Ipv4Addr::new(169, 254, 169, 254), // AWS / GCP / Azure IMDS
+        std::net::Ipv4Addr::new(168,  63, 129,  16), // Azure Wire Server (IMDS v2)
+        std::net::Ipv4Addr::new(100, 100, 100, 200), // Alibaba Cloud IMDS
+    ];
     if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        // 169.254.169.254 — AWS/GCP/Azure instance metadata service
-        if ip == std::net::Ipv4Addr::new(169, 254, 169, 254) {
+        if BLOCKED_METADATA_IPS.contains(&ip) {
             return Err("Endpoint must not target a cloud metadata address".to_string());
+        }
+    }
+    // IPv6 link-local (fe80::/10) — IMDS on dual-stack hosts
+    if let Ok(std::net::IpAddr::V6(v6)) = host.parse::<std::net::IpAddr>() {
+        if (v6.segments()[0] & 0xffc0) == 0xfe80 {
+            return Err("Endpoint must not target a link-local address".to_string());
         }
     }
     // GCP metadata hostname
@@ -1497,7 +1507,7 @@ pub fn validate_custom_endpoint(url_str: &str) -> Result<(), String> {
     if parsed.scheme() == "http" {
         let is_local = host == "localhost"
             || host == "127.0.0.1"
-            || host == "[::1]"
+            || host == "::1"
             || host == "0.0.0.0"
             || host.parse::<std::net::Ipv4Addr>().map_or(false, |ip| ip.is_private());
         if !is_local {
