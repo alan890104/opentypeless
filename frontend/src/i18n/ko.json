@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "가장 높은 다국어 정확도",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "높은 품질, 작은 용량 (양자화)",
-  "sttModel.belleZh.name": "Belle 간체 중국어",
-  "sttModel.belleZh.desc": "간체 중국어에 최적",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "가장 빠름, 가장 작은 크기",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count}회 받아쓰기 달성!",
   "stats.fact.keepGoing": "재미있는 통계를 잠금 해제하려면 계속 받아쓰기하세요!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

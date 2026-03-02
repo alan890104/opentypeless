@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "Mest nákvæm margtungum þekking",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "Há gæði, þjöppuð stærð (magngreind)",
-  "sttModel.belleZh.name": "Belle Einfalduð kínverska",
-  "sttModel.belleZh.desc": "Best fyrir einfaldaða kínversku",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "Hraðast, minnst pláss",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count} setningar og fjölgar!",
   "stats.fact.keepGoing": "Haltu áfram að setja til að opna skemmtilegar tölur!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

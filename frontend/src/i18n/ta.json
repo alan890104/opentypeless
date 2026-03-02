@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "மிக உச்ச பன்மொழி கூர்மை",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "உச்ச தரம், சிறிய அளவு (குவாண்டைஸ்டு)",
-  "sttModel.belleZh.name": "Belle Simplified Chinese",
-  "sttModel.belleZh.desc": "எளிமைப்படுத்தப்பட்ட சீனத்திற்கு சிறந்தது",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "மிக வேகமாக, சிறிய அடிச்சுவடு",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count} உச்சாடனங்கள், தொடர்ந்து வருகிறது!",
   "stats.fact.keepGoing": "வேடிக்கையான புள்ளிவிவரங்களைத் திறக்க உச்சரிக்கத் தொடருங்கள்!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

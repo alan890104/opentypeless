@@ -12,6 +12,8 @@ import type {
   CloudProvider,
   SttProvider,
   WhisperModelId,
+  LocalSttEngine,
+  Qwen3AsrModelId,
 } from '../types';
 import * as api from '../api';
 
@@ -36,6 +38,8 @@ let settings = $state<Settings>({
     mode: 'local',
     cloud: { provider: 'deepgram', api_key: '', endpoint: '', model_id: 'whisper', language: 'auto' },
     whisper_model: 'large_v3_turbo',
+    local_engine: 'whisper',
+    qwen3_asr_model: 'qwen3_asr1_7_b',
     language: 'auto',
     vad_enabled: true,
   },
@@ -199,6 +203,14 @@ export function setSttCloudLanguage(lang: string) {
 
 export function setSttWhisperModel(model: WhisperModelId) {
   settings.stt.whisper_model = model;
+}
+
+export function setSttLocalEngine(engine: LocalSttEngine) {
+  settings.stt.local_engine = engine;
+}
+
+export function setSttQwen3AsrModel(model: Qwen3AsrModelId) {
+  settings.stt.qwen3_asr_model = model;
 }
 
 export function setVadEnabled(v: boolean) {

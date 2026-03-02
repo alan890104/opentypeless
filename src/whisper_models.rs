@@ -10,7 +10,6 @@ pub enum WhisperModel {
     #[default]
     LargeV3Turbo,
     LargeV3TurboQ5,
-    BelleZh,
     Medium,
     Small,
     Base,
@@ -22,7 +21,6 @@ impl WhisperModel {
         match self {
             Self::LargeV3Turbo => "ggml-large-v3-turbo.bin",
             Self::LargeV3TurboQ5 => "ggml-large-v3-turbo-q5_0.bin",
-            Self::BelleZh => "ggml-belle-whisper-large-v3-turbo-zh.bin",
             Self::Medium => "ggml-medium.bin",
             Self::Small => "ggml-small.bin",
             Self::Base => "ggml-base.bin",
@@ -39,9 +37,6 @@ impl WhisperModel {
             ),
             Self::LargeV3TurboQ5 => Some(
                 "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-            ),
-            Self::BelleZh => Some(
-                "https://huggingface.co/alikia2x/belle-whisper-large-v3-turbo-zh-ggml/resolve/main/ggml-model.bin",
             ),
             Self::Medium => Some(
                 "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
@@ -62,7 +57,6 @@ impl WhisperModel {
         match self {
             Self::LargeV3Turbo => "Whisper Turbo",
             Self::LargeV3TurboQ5 => "Whisper Turbo Lite",
-            Self::BelleZh => "Belle Simplified Chinese",
             Self::Medium => "Whisper Medium",
             Self::Small => "Whisper Small",
             Self::Base => "Whisper Base",
@@ -74,7 +68,6 @@ impl WhisperModel {
         match self {
             Self::LargeV3Turbo => 1_620_000_000,
             Self::LargeV3TurboQ5 => 547_000_000,
-            Self::BelleZh => 1_600_000_000,
             Self::Medium => 1_530_000_000,
             Self::Small => 488_000_000,
             Self::Base => 148_000_000,
@@ -84,7 +77,6 @@ impl WhisperModel {
 
     pub fn languages(&self) -> &'static [&'static str] {
         match self {
-            Self::BelleZh => &["zh"],
             Self::LargeV3TurboZhTw => &["zh-TW"],
             _ => &["multilingual"],
         }
@@ -94,7 +86,6 @@ impl WhisperModel {
         match self {
             Self::LargeV3Turbo => "Highest multilingual accuracy",
             Self::LargeV3TurboQ5 => "High quality, compact size (quantized)",
-            Self::BelleZh => "Best for Simplified Chinese",
             Self::Medium => "Balanced speed and quality",
             Self::Small => "Lightweight and fast",
             Self::Base => "Fastest, smallest footprint",
@@ -106,7 +97,6 @@ impl WhisperModel {
         &[
             Self::LargeV3Turbo,
             Self::LargeV3TurboQ5,
-            Self::BelleZh,
             Self::Base,
             Self::LargeV3TurboZhTw,
         ]
@@ -195,7 +185,7 @@ pub fn recommend_model(system: &SystemInfo, settings_language: Option<&str>) -> 
 
     let prefers_zh_tw = lang.starts_with("zh-tw") || lang.starts_with("zh_tw")
         || lang.starts_with("zh-hant") || lang.starts_with("zh_hant");
-    let prefers_zh = lang.starts_with("zh") || lang == "chinese";
+    let _prefers_zh = lang.starts_with("zh") || lang == "chinese";
 
     let ram_gb = system.total_ram_bytes as f64 / 1_073_741_824.0;
     let vram_gb = system.gpu_vram_bytes as f64 / 1_073_741_824.0;
@@ -212,9 +202,6 @@ pub fn recommend_model(system: &SystemInfo, settings_language: Option<&str>) -> 
     if effective_gb >= 8.0 && disk_gb >= 3.0 {
         if prefers_zh_tw {
             return WhisperModel::LargeV3TurboZhTw;
-        }
-        if prefers_zh {
-            return WhisperModel::BelleZh;
         }
         WhisperModel::LargeV3Turbo
     } else if effective_gb >= 4.0 && disk_gb >= 1.0 {

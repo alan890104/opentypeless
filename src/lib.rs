@@ -7,6 +7,7 @@ mod hotkey;
 mod permissions;
 pub mod platform;
 mod polisher;
+mod qwen3_asr;
 pub mod settings;
 pub mod stt;
 mod transcribe;
@@ -60,6 +61,7 @@ pub struct AppState {
     pub vad_ctx: Mutex<Option<transcribe::VadContextCache>>,
     pub downloading: AtomicBool,
     pub audio_thread: Mutex<Option<audio::AudioThreadControl>>,
+    pub qwen3_asr_ctx: Mutex<Option<qwen3_asr::Qwen3AsrCache>>,
 }
 
 /// Restore original clipboard content from saved_clipboard.
@@ -148,6 +150,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
             &state.sample_rate,
             &state.buffer,
             &state.whisper_ctx,
+            &state.qwen3_asr_ctx,
             &state.http_client,
             &stt_config,
             &stt_language,
@@ -299,7 +302,10 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
                         SttMode::Cloud => {
                             format!("{} (Cloud/{})", stt_config.cloud.model_id, stt_config.cloud.provider.as_key())
                         }
-                        SttMode::Local => stt_config.whisper_model.display_name().to_string(),
+                        SttMode::Local => match stt_config.local_engine {
+                            stt::LocalSttEngine::Whisper => stt_config.whisper_model.display_name().to_string(),
+                            stt::LocalSttEngine::Qwen3Asr => stt_config.qwen3_asr_model.display_name().to_string(),
+                        },
                     };
                     let polish_model_name = if polish_elapsed_ms.is_some() {
                         match polish_config.mode {
@@ -448,6 +454,7 @@ fn stop_edit_and_replace(app: &AppHandle) {
             &state.sample_rate,
             &state.buffer,
             &state.whisper_ctx,
+            &state.qwen3_asr_ctx,
             &state.http_client,
             &stt_config,
             &edit_stt_language,
@@ -648,6 +655,9 @@ pub fn run() {
             commands::is_dev_mode,
             commands::set_mic_device,
             commands::export_diagnostic_log,
+            commands::list_qwen3_asr_models,
+            commands::switch_qwen3_asr_model,
+            commands::download_qwen3_asr_model,
         ])
         .setup(|app| {
             // Initialize logger
@@ -749,6 +759,7 @@ pub fn run() {
                 vad_ctx: Mutex::new(None),
                 downloading: AtomicBool::new(false),
                 audio_thread: Mutex::new(audio_thread_init),
+                qwen3_asr_ctx: Mutex::new(None),
             });
 
             // Migration: if old zh-TW model exists but settings use default (LargeV3Turbo)
@@ -788,35 +799,46 @@ pub fn run() {
                     let warmup_start = Instant::now();
                     let state = app_handle.state::<AppState>();
 
-                    let (stt_mode, whisper_model) = state.settings.lock()
-                        .map(|s| (s.stt.mode.clone(), s.stt.whisper_model.clone()))
+                    let (stt_mode, whisper_model, local_engine, qwen3_model) = state.settings.lock()
+                        .map(|s| (s.stt.mode.clone(), s.stt.whisper_model.clone(), s.stt.local_engine.clone(), s.stt.qwen3_asr_model.clone()))
                         .unwrap_or_default();
                     if stt_mode == SttMode::Local {
-                        if let Ok(model_path) = transcribe::whisper_model_path_for(&whisper_model) {
-                            let mut ctx_guard = match state.whisper_ctx.lock() {
-                            Ok(g) => g,
-                            Err(_) => {
-                                tracing::error!("whisper_ctx mutex poisoned, skipping pre-warm");
-                                return;
-                            }
-                        };
-                            if ctx_guard.is_none() {
-                                tracing::info!("Pre-warming Whisper model: {}...", whisper_model.display_name());
-                                let mut ctx_params = WhisperContextParameters::new();
-                                ctx_params.use_gpu(true);
-                                match whisper_rs::WhisperContext::new_with_params(
-                                    model_path.to_str().unwrap_or_default(),
-                                    ctx_params,
-                                ) {
-                                    Ok(ctx) => {
-                                        *ctx_guard = Some(transcribe::WhisperContextCache {
-                                            ctx,
-                                            loaded_path: model_path.clone(),
-                                        });
-                                        tracing::info!("Whisper model pre-warmed ({:.0?})", warmup_start.elapsed());
+                        match local_engine {
+                            stt::LocalSttEngine::Whisper => {
+                                if let Ok(model_path) = transcribe::whisper_model_path_for(&whisper_model) {
+                                    let mut ctx_guard = match state.whisper_ctx.lock() {
+                                        Ok(g) => g,
+                                        Err(_) => {
+                                            tracing::error!("whisper_ctx mutex poisoned, skipping pre-warm");
+                                            return;
+                                        }
+                                    };
+                                    if ctx_guard.is_none() {
+                                        tracing::info!("Pre-warming Whisper model: {}...", whisper_model.display_name());
+                                        let mut ctx_params = WhisperContextParameters::new();
+                                        ctx_params.use_gpu(true);
+                                        match whisper_rs::WhisperContext::new_with_params(
+                                            model_path.to_str().unwrap_or_default(),
+                                            ctx_params,
+                                        ) {
+                                            Ok(ctx) => {
+                                                *ctx_guard = Some(transcribe::WhisperContextCache {
+                                                    ctx,
+                                                    loaded_path: model_path.clone(),
+                                                });
+                                                tracing::info!("Whisper model pre-warmed ({:.0?})", warmup_start.elapsed());
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Whisper pre-warm failed: {}", e);
+                                            }
+                                        }
                                     }
-                                    Err(e) => {
-                                        tracing::error!("Whisper pre-warm failed: {}", e);
+                                }
+                            }
+                            stt::LocalSttEngine::Qwen3Asr => {
+                                if stt::is_qwen3_asr_downloaded(&qwen3_model) {
+                                    if let Err(e) = qwen3_asr::warm_qwen3_asr(&state.qwen3_asr_ctx, &qwen3_model) {
+                                        tracing::error!("Qwen3-ASR pre-warm failed: {}", e);
                                     }
                                 }
                             }

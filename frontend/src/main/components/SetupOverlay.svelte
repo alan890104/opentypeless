@@ -8,6 +8,8 @@
     getPolishConfig,
     setSttMode,
     setSttWhisperModel,
+    setSttLocalEngine,
+    setSttQwen3AsrModel,
     setSttCloudProvider,
     setSttCloudApiKey,
     setSttCloudEndpoint,
@@ -44,11 +46,16 @@
     switchPolishModel,
     downloadPolishModel,
     onPolishModelDownloadProgress,
+    listQwen3AsrModels,
+    switchQwen3AsrModel,
+    downloadQwen3AsrModel,
+    onQwen3AsrDownloadProgress,
+    getSystemInfo,
     saveApiKey,
     getApiKey,
     saveSettings as saveSettingsApi,
   } from '$lib/api';
-  import type { DownloadProgress, PermissionStatus, WhisperModelId, WhisperModelInfo, PolishModelInfo, PolishModel } from '$lib/types';
+  import type { DownloadProgress, PermissionStatus, WhisperModelId, WhisperModelInfo, PolishModelInfo, PolishModel, LocalSttEngine, Qwen3AsrModelId, Qwen3AsrModelInfo } from '$lib/types';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import CloudConfigPanel from '$lib/components/CloudConfigPanel.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -126,15 +133,64 @@
     sttModels.find(m => m.id === selectedSttModel)?.downloaded ?? false
   );
 
+  // Engine selection
+  let selectedLocalEngine = $state<LocalSttEngine>('whisper');
+  // unified recommended key: 'whisper:<model_id>' or 'qwen3_asr:<model_id>'
+  let recommendedKey = $state<string>('');
+
+  // Qwen3-ASR models
+  let qwen3AsrModels = $state<Qwen3AsrModelInfo[]>([]);
+  let selectedQwen3Model = $state<Qwen3AsrModelId>('qwen3_asr0_6_b');
+  let recommendedQwen3ModelId = $state<Qwen3AsrModelId>('qwen3_asr0_6_b');
+  let selectedQwen3ModelDownloaded = $derived(
+    qwen3AsrModels.find(m => m.id === selectedQwen3Model)?.downloaded ?? false
+  );
+
+  let isCurrentModelDownloaded = $derived(
+    selectedLocalEngine === 'whisper' ? selectedSttModelDownloaded : selectedQwen3ModelDownloaded
+  );
+
+  function recommendLocalEngine(): LocalSttEngine {
+    const lang = navigator.language.toLowerCase();
+    // zh-TW / zh-Hant: Whisper Turbo TW is purpose-built → stay on Whisper
+    if (lang.startsWith('zh-tw') || lang.startsWith('zh-hant')) return 'whisper';
+    // Simplified Chinese, Japanese, Korean, Cantonese: Qwen3-ASR wins clearly
+    if (lang.startsWith('zh') || lang.startsWith('ja') || lang.startsWith('ko') || lang.startsWith('yue')) {
+      return 'qwen3_asr';
+    }
+    return 'whisper';
+  }
+
+  async function recommendQwen3Model(): Promise<Qwen3AsrModelId> {
+    try {
+      const sys = await getSystemInfo();
+      const gb16 = 16 * 1024 * 1024 * 1024;
+      const gb6 = 6 * 1024 * 1024 * 1024;
+      return (sys.total_ram_bytes >= gb16 && sys.available_disk_bytes >= gb6)
+        ? 'qwen3_asr1_7_b'
+        : 'qwen3_asr0_6_b';
+    } catch {
+      return 'qwen3_asr0_6_b';
+    }
+  }
+
   async function fetchSttModels() {
     try {
-      const [models, rec] = await Promise.all([
+      const [models, rec, q3models, q3rec, engineRec] = await Promise.all([
         listWhisperModels(),
         getWhisperModelRecommendation() as Promise<WhisperModelId>,
+        listQwen3AsrModels(),
+        recommendQwen3Model(),
+        Promise.resolve(recommendLocalEngine()),
       ]);
       sttModels = models;
       recommendedSttModelId = rec;
       selectedSttModel = rec;
+      qwen3AsrModels = q3models;
+      recommendedQwen3ModelId = q3rec;
+      selectedQwen3Model = q3rec;
+      selectedLocalEngine = engineRec;
+      recommendedKey = engineRec === 'whisper' ? `whisper:${rec}` : `qwen3_asr:${q3rec}`;
     } catch {
       // Fallback to defaults
     }
@@ -229,24 +285,49 @@
 
   async function onSttLocalDownload() {
     setSttMode('local');
-    setSttWhisperModel(selectedSttModel);
-    try {
-      await switchWhisperModel(selectedSttModel);
-    } catch (e) {
-      console.error('Failed to switch whisper model:', e);
-    }
 
-    if (selectedSttModelDownloaded) {
-      // Check if VAD model also exists — if both ready, skip download screen
+    if (selectedLocalEngine === 'whisper') {
+      setSttLocalEngine('whisper');
+      setSttWhisperModel(selectedSttModel);
       try {
-        const vadStatus = await checkVadModelStatus();
-        if (vadStatus.downloaded) {
-          goToPolishChoice();
-          return;
-        }
-      } catch {}
-      // VAD missing — go through download flow (Whisper will complete instantly)
+        await switchWhisperModel(selectedSttModel);
+      } catch (e) {
+        console.error('Failed to switch whisper model:', e);
+      }
+
+      if (selectedSttModelDownloaded) {
+        try {
+          const vadStatus = await checkVadModelStatus();
+          if (vadStatus.downloaded) {
+            try { await saveSettingsApi(buildPayload()); } catch {}
+            goToPolishChoice();
+            return;
+          }
+        } catch {}
+      }
+    } else {
+      // Qwen3-ASR
+      setSttLocalEngine('qwen3_asr');
+      setSttQwen3AsrModel(selectedQwen3Model);
+      try {
+        await switchQwen3AsrModel(selectedQwen3Model);
+      } catch (e) {
+        console.error('Failed to switch Qwen3-ASR model:', e);
+      }
+
+      if (selectedQwen3ModelDownloaded) {
+        try {
+          const vadStatus = await checkVadModelStatus();
+          if (vadStatus.downloaded) {
+            try { await saveSettingsApi(buildPayload()); } catch {}
+            goToPolishChoice();
+            return;
+          }
+        } catch {}
+      }
     }
+    // Persist local_engine (and model) before starting download
+    try { await saveSettingsApi(buildPayload()); } catch {}
     startSttDownload();
   }
 
@@ -255,8 +336,10 @@
   let downloadPercent = $state(0);
   let downloadedBytes = $state(0);
   let downloadTotalBytes = $state(0);
+  let sttDownloadCurrentFile = $state('');
   let sttDownloadUnlisten: (() => void) | null = null;
   let vadDownloadUnlisten: (() => void) | null = null;
+  let qwen3DownloadUnlisten: (() => void) | null = null;
   let whisperDone = $state(false);
   let vadDone = $state(false);
 
@@ -274,18 +357,14 @@
     downloadPercent = 0;
     downloadedBytes = 0;
     downloadTotalBytes = 0;
+    sttDownloadCurrentFile = '';
     whisperDone = false;
     vadDone = false;
 
     // Clean up previous listeners
-    if (sttDownloadUnlisten) {
-      sttDownloadUnlisten();
-      sttDownloadUnlisten = null;
-    }
-    if (vadDownloadUnlisten) {
-      vadDownloadUnlisten();
-      vadDownloadUnlisten = null;
-    }
+    if (sttDownloadUnlisten) { sttDownloadUnlisten(); sttDownloadUnlisten = null; }
+    if (vadDownloadUnlisten) { vadDownloadUnlisten(); vadDownloadUnlisten = null; }
+    if (qwen3DownloadUnlisten) { qwen3DownloadUnlisten(); qwen3DownloadUnlisten = null; }
 
     // Start VAD model download in parallel (~1.6 MB)
     vadDownloadUnlisten = await onVadModelDownloadProgress((p: DownloadProgress) => {
@@ -298,30 +377,57 @@
     });
     downloadVadModel().catch(() => { vadDone = true; });
 
-    // Start Whisper model download with progress tracking
-    sttDownloadUnlisten = await onWhisperModelDownloadProgress((p: DownloadProgress) => {
-      if (p.status === 'downloading') {
-        const total = p.total || 1;
-        const downloaded = p.downloaded || 0;
-        downloadPercent = Math.min((downloaded / total) * 100, 99);
-        downloadedBytes = downloaded;
-        downloadTotalBytes = total;
-      } else if (p.status === 'complete') {
-        whisperDone = true;
-        // $effect handles transition when both are done
-      } else if (p.status === 'error') {
-        errorMessage = p.message || t('setup.errorDefault');
+    if (selectedLocalEngine === 'whisper') {
+      // Start Whisper model download with progress tracking
+      sttDownloadUnlisten = await onWhisperModelDownloadProgress((p: DownloadProgress) => {
+        if (p.status === 'downloading') {
+          const total = p.total || 1;
+          const downloaded = p.downloaded || 0;
+          downloadPercent = Math.min((downloaded / total) * 100, 99);
+          downloadedBytes = downloaded;
+          downloadTotalBytes = total;
+        } else if (p.status === 'complete') {
+          whisperDone = true;
+        } else if (p.status === 'error') {
+          errorMessage = p.message || t('setup.errorDefault');
+          lastFailedDownload = 'stt';
+          currentState = 'error';
+        }
+      });
+
+      try {
+        await downloadWhisperModel(selectedSttModel);
+      } catch (e) {
+        errorMessage = String(e);
         lastFailedDownload = 'stt';
         currentState = 'error';
       }
-    });
+    } else {
+      // Start Qwen3-ASR model download with progress tracking
+      qwen3DownloadUnlisten = await onQwen3AsrDownloadProgress((p) => {
+        if (p.status === 'complete') {
+          whisperDone = true; // reuse flag — signals STT model is done
+        } else if (p.status === 'error') {
+          errorMessage = p.message || t('setup.errorDefault');
+          lastFailedDownload = 'stt';
+          currentState = 'error';
+        } else {
+          const total = p.total || 1;
+          const downloaded = p.downloaded || 0;
+          downloadPercent = Math.min((downloaded / total) * 100, 99);
+          downloadedBytes = downloaded;
+          downloadTotalBytes = total;
+          sttDownloadCurrentFile = p.current_file ?? '';
+        }
+      });
 
-    try {
-      await downloadWhisperModel(selectedSttModel);
-    } catch (e) {
-      errorMessage = String(e);
-      lastFailedDownload = 'stt';
-      currentState = 'error';
+      try {
+        await downloadQwen3AsrModel(selectedQwen3Model);
+      } catch (e) {
+        errorMessage = String(e);
+        lastFailedDownload = 'stt';
+        currentState = 'error';
+      }
     }
   }
 
@@ -550,18 +656,10 @@
 
   onDestroy(() => {
     stopPermissionPolling();
-    if (sttDownloadUnlisten) {
-      sttDownloadUnlisten();
-      sttDownloadUnlisten = null;
-    }
-    if (vadDownloadUnlisten) {
-      vadDownloadUnlisten();
-      vadDownloadUnlisten = null;
-    }
-    if (llmDownloadUnlisten) {
-      llmDownloadUnlisten();
-      llmDownloadUnlisten = null;
-    }
+    if (sttDownloadUnlisten) { sttDownloadUnlisten(); sttDownloadUnlisten = null; }
+    if (vadDownloadUnlisten) { vadDownloadUnlisten(); vadDownloadUnlisten = null; }
+    if (qwen3DownloadUnlisten) { qwen3DownloadUnlisten(); qwen3DownloadUnlisten = null; }
+    if (llmDownloadUnlisten) { llmDownloadUnlisten(); llmDownloadUnlisten = null; }
   });
 </script>
 
@@ -681,22 +779,47 @@
           {#if sttMode === 'local'}
             <div class="setup-panel-desc">{t('setup.sttLocalDesc')}</div>
 
-            <div class="setup-model-list">
+            <!-- Unified model list (Whisper + Qwen3-ASR) -->
+            <div class="setup-model-list setup-stt-grid">
               {#each sttModels as model (model.id)}
                 <button
                   class="setup-model-row"
-                  class:selected={selectedSttModel === model.id}
-                  onclick={() => selectedSttModel = model.id}
+                  class:selected={selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
+                  onclick={() => { selectedLocalEngine = 'whisper'; selectedSttModel = model.id; }}
                 >
                   <div class="setup-model-radio">
-                    {#if selectedSttModel === model.id}
+                    {#if selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
                       <div class="setup-model-radio-dot"></div>
                     {/if}
                   </div>
                   <div class="setup-model-info">
                     <div class="setup-model-name">
                       {t(`sttModel.${camelCase(model.id)}.name`)}
-                      {#if model.id === recommendedSttModelId}
+                      {#if `whisper:${model.id}` === recommendedKey}
+                        <span class="setup-model-badge">{t('setup.recommended')}</span>
+                      {/if}
+                    </div>
+                    <div class="setup-model-desc">
+                      {t(`sttModel.${camelCase(model.id)}.desc`)} · {formatBytes(model.size_bytes)}
+                    </div>
+                  </div>
+                </button>
+              {/each}
+              {#each qwen3AsrModels as model (model.id)}
+                <button
+                  class="setup-model-row"
+                  class:selected={selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
+                  onclick={() => { selectedLocalEngine = 'qwen3_asr'; selectedQwen3Model = model.id; }}
+                >
+                  <div class="setup-model-radio">
+                    {#if selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
+                      <div class="setup-model-radio-dot"></div>
+                    {/if}
+                  </div>
+                  <div class="setup-model-info">
+                    <div class="setup-model-name">
+                      {t(`sttModel.${camelCase(model.id)}.name`)}
+                      {#if `qwen3_asr:${model.id}` === recommendedKey}
                         <span class="setup-model-badge">{t('setup.recommended')}</span>
                       {/if}
                     </div>
@@ -709,7 +832,7 @@
             </div>
 
             <button class="setup-download-btn" onclick={onSttLocalDownload}>
-              {selectedSttModelDownloaded ? t('setup.permContinue') : t('setup.sttModelDownloadBtn')}
+              {isCurrentModelDownloaded ? t('setup.permContinue') : t('setup.sttModelDownloadBtn')}
             </button>
           {:else}
             <div class="setup-panel-desc">{t('setup.sttCloudDesc')}</div>
@@ -1205,6 +1328,8 @@
     width: fit-content;
   }
 
+
+
   /* ── Panel description ── */
   .setup-panel-desc {
     font-size: 13px;
@@ -1354,6 +1479,36 @@
     font-size: 11px;
     color: var(--text-tertiary);
     margin-top: 2px;
+  }
+
+  /* ── STT model grid (2-column) ── */
+  .setup-stt-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+    max-width: 400px;
+  }
+
+  .setup-stt-grid .setup-model-row {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    align-items: flex-start;
+  }
+
+  /* restore bottom border removed by :last-child rule */
+  .setup-stt-grid .setup-model-row:last-child {
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .setup-stt-grid .setup-model-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
 </style>

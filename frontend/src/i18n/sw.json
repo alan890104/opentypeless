@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "Usahihi wa lugha nyingi wa juu zaidi",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "Ubora wa juu, saizi ndogo (imekadiriwa)",
-  "sttModel.belleZh.name": "Belle Simplified Chinese",
-  "sttModel.belleZh.desc": "Bora zaidi kwa Kichina Kilichoboreshwa",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "Haraka zaidi, athari ndogo zaidi",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "Maandishi {count} na inaendelea!",
   "stats.fact.keepGoing": "Endelea kuamuru ili kufungua takwimu za kufurahisha!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

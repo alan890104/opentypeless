@@ -15,11 +15,24 @@ export interface SttCloudConfig {
 export type WhisperModelId =
   | 'large_v3_turbo'
   | 'large_v3_turbo_q5'
-  | 'belle_zh'
   | 'medium'
   | 'small'
   | 'base'
   | 'large_v3_turbo_zh_tw';
+
+export type LocalSttEngine = 'whisper' | 'qwen3_asr';
+
+export type Qwen3AsrModelId = 'qwen3_asr1_7_b' | 'qwen3_asr0_6_b';
+
+export interface Qwen3AsrModelInfo {
+  id: Qwen3AsrModelId;
+  display_name: string;
+  description: string;
+  size_bytes: number;
+  downloaded: boolean;
+  file_size_on_disk: number;
+  is_active: boolean;
+}
 
 export interface WhisperModelInfo {
   id: WhisperModelId;
@@ -46,6 +59,8 @@ export interface SttConfig {
   mode: SttMode;
   cloud: SttCloudConfig;
   whisper_model: WhisperModelId;
+  local_engine: LocalSttEngine;
+  qwen3_asr_model: Qwen3AsrModelId;
   language: string;
   vad_enabled: boolean;
 }

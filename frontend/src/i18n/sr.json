@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "Највиша вишејезична прецизност",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "Висок квалитет, компактна величина (квантизована)",
-  "sttModel.belleZh.name": "Belle поједностављени кинески",
-  "sttModel.belleZh.desc": "Најбоље за поједностављени кинески",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "Најбржа, минимална величина",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count} диктата и настављамо!",
   "stats.fact.keepGoing": "Наставите да диктирате да откључате забавну статистику!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

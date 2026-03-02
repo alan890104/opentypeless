@@ -3,8 +3,9 @@ use crate::credentials;
 use crate::hotkey::{hotkey_display_label, parse_hotkey_string};
 use crate::platform;
 use crate::polisher::{self, PolishModelInfo};
+use crate::qwen3_asr as qwen3;
 use crate::settings::{self, Settings};
-use crate::stt::SttMode;
+use crate::stt::{Qwen3AsrModel, Qwen3AsrModelInfo, SttMode};
 use crate::whisper_models::{self, WhisperModel, WhisperModelInfo, SystemInfo};
 use crate::{history, AppState};
 use serde::Serialize;
@@ -639,6 +640,7 @@ pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         &state.sample_rate,
         &state.buffer,
         &state.whisper_ctx,
+        &state.qwen3_asr_ctx,
         &state.http_client,
         &stt_config,
         &stt_language,
@@ -1404,9 +1406,8 @@ pub fn download_whisper_model(app: AppHandle, model: WhisperModel) -> Result<(),
     let tmp_path = model_path.with_extension("bin.part");
     let _ = std::fs::remove_file(&tmp_path);
 
-    // BelleZh downloads as ggml-model.bin but we rename to the canonical filename
-    let needs_rename = model == WhisperModel::BelleZh || model == WhisperModel::LargeV3TurboZhTw;
-    let _ = needs_rename; // used implicitly — rename always happens via tmp_path → model_path
+    // LargeV3TurboZhTw downloads as ggml-model.bin; all models are renamed from
+    // tmp_path to model_path at the end of the download.
 
     std::thread::spawn(move || {
         (|| {
@@ -1833,4 +1834,197 @@ pub fn export_diagnostic_log(state: State<'_, AppState>) -> Result<String, Strin
     std::fs::write(&dest, &report).map_err(|e| format!("Failed to write: {}", e))?;
     tracing::info!("Diagnostic report saved to {:?}", dest);
     Ok(dest.to_string_lossy().to_string())
+}
+
+// ── Qwen3-ASR commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_qwen3_asr_models(state: State<'_, AppState>) -> Vec<Qwen3AsrModelInfo> {
+    let active = state.settings.lock()
+        .map(|s| s.stt.qwen3_asr_model.clone())
+        .unwrap_or_default();
+    Qwen3AsrModel::all()
+        .iter()
+        .map(|m| Qwen3AsrModelInfo::from_model(m, &active))
+        .collect()
+}
+
+#[tauri::command]
+pub fn switch_qwen3_asr_model(
+    state: State<'_, AppState>,
+    model: Qwen3AsrModel,
+) -> Result<(), String> {
+    {
+        let mut guard = state.settings.lock().map_err(|e| e.to_string())?;
+        guard.stt.qwen3_asr_model = model.clone();
+        settings::save_settings_to_disk(&guard);
+    }
+    // Invalidate stale cache so next transcription loads the new model.
+    qwen3::invalidate_qwen3_asr_cache(&state.qwen3_asr_ctx);
+    // Pre-warm inline if already downloaded.
+    if crate::stt::is_qwen3_asr_downloaded(&model) {
+        if let Err(e) = qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model) {
+            tracing::warn!("switch_qwen3_asr_model: pre-warm failed: {}", e);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn download_qwen3_asr_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model: Qwen3AsrModel,
+) -> Result<(), String> {
+    // Only one download at a time.
+    if state.downloading.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("A model download is already in progress".to_string());
+    }
+
+    let model_dir = crate::stt::qwen3_asr_model_dir(&model);
+    let _ = std::fs::create_dir_all(&model_dir);
+
+    let files: Vec<(&'static str, &'static str)> = model.download_files();
+    let total_size = model.size_bytes();
+
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3600))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                    "status": "error", "message": e.to_string()
+                }));
+                state.downloading.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
+        let mut downloaded_total: u64 = 0;
+        let num_files = files.len();
+
+        for (file_idx, (filename, hf_repo)) in files.iter().enumerate() {
+            let url = format!("https://huggingface.co/{}/resolve/main/{}", hf_repo, filename);
+            let dest = model_dir.join(filename);
+
+            // Skip already-downloaded files.
+            if dest.exists() {
+                if let Ok(m) = std::fs::metadata(&dest) {
+                    downloaded_total += m.len();
+                    let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                        "downloaded": downloaded_total,
+                        "total": total_size,
+                        "percent": (downloaded_total as f64 / total_size as f64 * 100.0) as u64,
+                        "current_file": filename,
+                        "file_index": file_idx,
+                        "file_count": num_files,
+                    }));
+                    continue;
+                }
+            }
+
+            let tmp = dest.with_extension("safetensors.part");
+            let resp = match client.get(&url).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                        "status": "error", "message": format!("Download failed for {}: {}", filename, e)
+                    }));
+                    state.downloading.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            if !resp.status().is_success() {
+                let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                    "status": "error",
+                    "message": format!("HTTP {} for {}", resp.status(), filename)
+                }));
+                state.downloading.store(false, Ordering::SeqCst);
+                return;
+            }
+
+            let mut file = match std::fs::File::create(&tmp) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                        "status": "error", "message": format!("Cannot create {}: {}", filename, e)
+                    }));
+                    state.downloading.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let mut stream = resp;
+            let mut file_downloaded: u64 = 0;
+            let mut buf = vec![0u8; 65536];
+            loop {
+                use std::io::{Read, Write};
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Err(e) = file.write_all(&buf[..n]) {
+                            let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                                "status": "error", "message": format!("Write error for {}: {}", filename, e)
+                            }));
+                            state.downloading.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                        file_downloaded += n as u64;
+                        downloaded_total += n as u64;
+                        let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                            "downloaded": downloaded_total,
+                            "total": total_size,
+                            "percent": (downloaded_total as f64 / total_size as f64 * 100.0) as u64,
+                            "current_file": filename,
+                            "file_index": file_idx,
+                            "file_count": num_files,
+                            "file_downloaded": file_downloaded,
+                        }));
+                    }
+                    Err(e) => {
+                        let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                            "status": "error", "message": format!("Read error for {}: {}", filename, e)
+                        }));
+                        state.downloading.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                }
+            }
+
+            drop(file);
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+                    "status": "error", "message": format!("Rename failed for {}: {}", filename, e)
+                }));
+                state.downloading.store(false, Ordering::SeqCst);
+                return;
+            }
+        }
+
+        // All files downloaded — warm the engine.
+        let active_model = state.settings.lock()
+            .map(|s| s.stt.qwen3_asr_model.clone())
+            .unwrap_or_default();
+        if active_model == model {
+            if let Err(e) = qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model) {
+                tracing::warn!("download_qwen3_asr_model: post-download warm failed: {}", e);
+            }
+        }
+
+        let _ = app.emit("qwen3-asr-download-progress", serde_json::json!({
+            "status": "complete",
+            "downloaded": downloaded_total,
+            "total": total_size,
+            "percent": 100u64,
+        }));
+
+        state.downloading.store(false, Ordering::SeqCst);
+    });
+
+    Ok(())
 }

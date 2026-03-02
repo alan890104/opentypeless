@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "多語言準確度最高",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "高品質，省空間（量化版）",
-  "sttModel.belleZh.name": "Belle 簡體中文",
-  "sttModel.belleZh.desc": "簡體中文辨識最佳",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "速度最快，僅適合英文",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -345,5 +343,12 @@
   "stats.fact.streak": "已累計 {count} 次口述，繼續保持！",
   "stats.fact.keepGoing": "繼續口述，解鎖更多有趣數據！",
   "promptRules.matchConditions": "匹配條件",
-  "promptRules.or": "或"
+  "promptRules.or": "或",
+  "settings.stt.localEngine": "本地引擎",
+  "settings.stt.localEngineDescWhisper": "支援 99+ 語言，多語言覆蓋廣。",
+  "settings.stt.localEngineDescQwen3Asr": "30 種語言、22 種中文方言，帶口音及嘈雜環境更準確。",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "精度最高，適合高要求場景",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "輕量快速，精度略低於 1.7B"
 }

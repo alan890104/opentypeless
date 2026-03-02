@@ -1,6 +1,9 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::polisher::truncate_for_error;
+use crate::settings::models_dir;
 use crate::whisper_models::WhisperModel;
 
 fn default_true() -> bool {
@@ -13,6 +16,155 @@ pub enum SttMode {
     #[default]
     Local,
     Cloud,
+}
+
+// ── Local STT engine selection ────────────────────────────────────────────────
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalSttEngine {
+    #[default]
+    Whisper,
+    Qwen3Asr,
+}
+
+// ── Qwen3-ASR model variants ──────────────────────────────────────────────────
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Qwen3AsrModel {
+    #[default]
+    Qwen3Asr1_7B,
+    Qwen3Asr0_6B,
+}
+
+impl Qwen3AsrModel {
+    pub fn model_dir_name(&self) -> &'static str {
+        match self {
+            Self::Qwen3Asr1_7B => "qwen3-asr-1.7b",
+            Self::Qwen3Asr0_6B => "qwen3-asr-0.6b",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Qwen3Asr1_7B => "Qwen3-ASR 1.7B",
+            Self::Qwen3Asr0_6B => "Qwen3-ASR 0.6B",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Qwen3Asr1_7B => "Highest accuracy. ~3x better on Chinese, noisy speech, and dialects vs Whisper Turbo. 30 languages + 22 Chinese dialects.",
+            Self::Qwen3Asr0_6B => "Fast and efficient. Greatly outperforms Whisper on Chinese and noisy speech. 30 languages + 22 Chinese dialects.",
+        }
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        match self {
+            Self::Qwen3Asr1_7B => 4_700_000_000,
+            Self::Qwen3Asr0_6B => 1_890_000_000,
+        }
+    }
+
+    pub fn hf_repo(&self) -> &'static str {
+        match self {
+            Self::Qwen3Asr1_7B => "Qwen/Qwen3-ASR-1.7B",
+            Self::Qwen3Asr0_6B => "Qwen/Qwen3-ASR-0.6B",
+        }
+    }
+
+    /// Files that must be present for the model to be considered downloaded.
+    pub fn required_files(&self) -> Vec<&'static str> {
+        match self {
+            Self::Qwen3Asr1_7B => vec![
+                "config.json",
+                "tokenizer.json",
+                "model.safetensors.index.json",
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors",
+            ],
+            Self::Qwen3Asr0_6B => vec![
+                "config.json",
+                "tokenizer.json",
+                "model.safetensors",
+            ],
+        }
+    }
+
+    /// Returns `(filename, hf_repo)` pairs for downloading.
+    ///
+    /// `tokenizer.json` is not present in the ASR repo — it must be fetched
+    /// from the corresponding Qwen3 base model repo instead.
+    pub fn download_files(&self) -> Vec<(&'static str, &'static str)> {
+        let asr = self.hf_repo();
+        let tok_repo = match self {
+            Self::Qwen3Asr1_7B => "Qwen/Qwen3-1.7B",
+            Self::Qwen3Asr0_6B => "Qwen/Qwen3-0.6B",
+        };
+        match self {
+            Self::Qwen3Asr0_6B => vec![
+                ("config.json", asr),
+                ("tokenizer.json", tok_repo),
+                ("model.safetensors", asr),
+            ],
+            Self::Qwen3Asr1_7B => vec![
+                ("config.json", asr),
+                ("tokenizer.json", tok_repo),
+                ("model.safetensors.index.json", asr),
+                ("model-00001-of-00002.safetensors", asr),
+                ("model-00002-of-00002.safetensors", asr),
+            ],
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Qwen3Asr1_7B, Self::Qwen3Asr0_6B]
+    }
+}
+
+/// Returns the on-disk directory for a Qwen3-ASR model.
+pub fn qwen3_asr_model_dir(model: &Qwen3AsrModel) -> PathBuf {
+    models_dir().join(model.model_dir_name())
+}
+
+/// Returns true if all required files for the model are present on disk.
+pub fn is_qwen3_asr_downloaded(model: &Qwen3AsrModel) -> bool {
+    let dir = qwen3_asr_model_dir(model);
+    model.required_files().iter().all(|f| dir.join(f).exists())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Qwen3AsrModelInfo {
+    pub id: Qwen3AsrModel,
+    pub display_name: &'static str,
+    pub description: &'static str,
+    pub size_bytes: u64,
+    pub downloaded: bool,
+    pub file_size_on_disk: u64,
+    pub is_active: bool,
+}
+
+impl Qwen3AsrModelInfo {
+    pub fn from_model(model: &Qwen3AsrModel, active: &Qwen3AsrModel) -> Self {
+        let dir = qwen3_asr_model_dir(model);
+        let file_size_on_disk: u64 = model
+            .required_files()
+            .iter()
+            .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+            .map(|m| m.len())
+            .sum();
+        let downloaded = is_qwen3_asr_downloaded(model);
+        Self {
+            id: model.clone(),
+            display_name: model.display_name(),
+            description: model.description(),
+            size_bytes: model.size_bytes(),
+            downloaded,
+            file_size_on_disk,
+            is_active: model == active,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,6 +264,12 @@ pub struct SttConfig {
     pub cloud: SttCloudConfig,
     #[serde(default)]
     pub whisper_model: WhisperModel,
+    /// Which local STT engine to use when mode is Local.
+    #[serde(default)]
+    pub local_engine: LocalSttEngine,
+    /// Which Qwen3-ASR model variant to use.
+    #[serde(default)]
+    pub qwen3_asr_model: Qwen3AsrModel,
     /// BCP-47 language code shared by both local and cloud STT.
     /// Migrated from `cloud.language` for older settings files.
     #[serde(default = "default_stt_language")]
@@ -127,6 +285,8 @@ impl Default for SttConfig {
             mode: SttMode::default(),
             cloud: SttCloudConfig::default(),
             whisper_model: WhisperModel::default(),
+            local_engine: LocalSttEngine::default(),
+            qwen3_asr_model: Qwen3AsrModel::default(),
             language: default_stt_language(),
             vad_enabled: true,
         }

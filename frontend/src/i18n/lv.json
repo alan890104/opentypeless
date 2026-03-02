@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "Augstākā daudzvalodu precizitāte",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "Augsta kvalitāte, kompakts izmērs (kvantificēts)",
-  "sttModel.belleZh.name": "Belle vienkāršotā ķīniešu",
-  "sttModel.belleZh.desc": "Labākais vienkāršotajai ķīniešu valodai",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "Ātrākais, mazākais izmērs",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count} diktāti un skaitīšana turpinās!",
   "stats.fact.keepGoing": "Turpiniet diktēt, lai atbloķētu jautru statistiku!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

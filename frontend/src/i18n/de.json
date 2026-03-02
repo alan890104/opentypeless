@@ -51,8 +51,6 @@
   "sttModel.largeV3Turbo.desc": "Höchste mehrsprachige Genauigkeit",
   "sttModel.largeV3TurboQ5.name": "Whisper Turbo Lite",
   "sttModel.largeV3TurboQ5.desc": "Hohe Qualität, kompakte Größe (quantisiert)",
-  "sttModel.belleZh.name": "Belle Vereinfachtes Chinesisch",
-  "sttModel.belleZh.desc": "Am besten für Vereinfachtes Chinesisch",
   "sttModel.base.name": "Whisper Base",
   "sttModel.base.desc": "Am schnellsten, kleinster Speicherbedarf",
   "sttModel.largeV3TurboZhTw.name": "Whisper Turbo TW",
@@ -338,5 +336,11 @@
   "stats.fact.streak": "{count} Diktate und es werden mehr!",
   "stats.fact.keepGoing": "Diktieren Sie weiter, um lustige Statistiken freizuschalten!",
   "promptRules.matchConditions": "Match Conditions",
-  "promptRules.or": "OR"
+  "promptRules.or": "OR",
+  "settings.stt.localEngine": "Local Engine",
+  "settings.stt.localEngineDesc": "Qwen3-ASR is more accurate on Chinese and technical terms. Whisper supports 99+ languages.",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17B.desc": "Best for Chinese, Japanese & noisy speech",
+  "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
+  "sttModel.qwen3Asr06B.desc": "Fast. Outperforms Whisper on Chinese & noisy speech"
 }

@@ -18,6 +18,8 @@ import type {
   WhisperModelId,
   PolishModelInfo,
   PolishModel,
+  Qwen3AsrModelInfo,
+  Qwen3AsrModelId,
 } from './types';
 
 // ── Settings ──
@@ -222,3 +224,19 @@ export const isDevMode = () => invoke<boolean>('is_dev_mode');
 // ── Diagnostics ──
 
 export const exportDiagnosticLog = () => invoke<string>('export_diagnostic_log');
+
+// ── Qwen3-ASR Model ──
+
+export const listQwen3AsrModels = () =>
+  invoke<Qwen3AsrModelInfo[]>('list_qwen3_asr_models');
+
+export const switchQwen3AsrModel = (model: Qwen3AsrModelId) =>
+  invoke<void>('switch_qwen3_asr_model', { model });
+
+export const downloadQwen3AsrModel = (model: string) =>
+  invoke<void>('download_qwen3_asr_model', { model });
+
+export const onQwen3AsrDownloadProgress = (
+  cb: (p: DownloadProgress & { current_file?: string; file_index?: number; file_count?: number }) => void,
+): Promise<UnlistenFn> =>
+  listen('qwen3-asr-download-progress', (e) => cb(e.payload as DownloadProgress & { current_file?: string; file_index?: number; file_count?: number }));

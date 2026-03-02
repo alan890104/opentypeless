@@ -5,7 +5,8 @@ use std::sync::{
 };
 use std::time::Instant;
 
-use crate::stt::{SttConfig, SttMode};
+use crate::qwen3_asr::Qwen3AsrCache;
+use crate::stt::{LocalSttEngine, SttConfig, SttMode};
 use crate::transcribe::{transcribe_with_cached_whisper, WhisperContextCache, VadContextCache};
 
 /// Handle to control (stop) a running audio thread.
@@ -284,6 +285,7 @@ pub fn do_stop_recording(
     sample_rate_mutex: &Mutex<Option<u32>>,
     buffer: &Arc<Mutex<Vec<f32>>>,
     whisper_ctx: &Mutex<Option<WhisperContextCache>>,
+    qwen3_asr_ctx: &Mutex<Option<Qwen3AsrCache>>,
     http_client: &reqwest::blocking::Client,
     stt_config: &SttConfig,
     language: &str,
@@ -360,11 +362,23 @@ pub fn do_stop_recording(
 
     let stt_start = Instant::now();
     let text = match stt_config.mode {
-        SttMode::Local => {
-            let result = transcribe_with_cached_whisper(whisper_ctx, &samples_16k, &stt_config.whisper_model, language, app_name, dictionary_terms)?;
-            tracing::info!("[timing] STT (local whisper): {:.0?}", stt_start.elapsed());
-            result
-        }
+        SttMode::Local => match stt_config.local_engine {
+            LocalSttEngine::Whisper => {
+                let result = transcribe_with_cached_whisper(whisper_ctx, &samples_16k, &stt_config.whisper_model, language, app_name, dictionary_terms)?;
+                tracing::info!("[timing] STT (local whisper): {:.0?}", stt_start.elapsed());
+                result
+            }
+            LocalSttEngine::Qwen3Asr => {
+                let result = crate::qwen3_asr::transcribe_with_cached_qwen3_asr(
+                    qwen3_asr_ctx,
+                    &samples_16k,
+                    &stt_config.qwen3_asr_model,
+                    language,
+                )?;
+                tracing::info!("[timing] STT (local qwen3-asr): {:.0?}", stt_start.elapsed());
+                result
+            }
+        },
         SttMode::Cloud => {
             let result = crate::stt::run_cloud_stt(&stt_config.cloud, &samples_16k, http_client)?;
             tracing::info!("[timing] STT (cloud {}): {:.0?}", stt_config.cloud.provider.as_key(), stt_start.elapsed());

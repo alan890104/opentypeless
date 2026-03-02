@@ -5,6 +5,8 @@
     getSttConfig,
     setSttMode,
     setSttWhisperModel,
+    setSttLocalEngine,
+    setSttQwen3AsrModel,
     setSttLanguage,
     setSttCloudProvider,
     setSttCloudApiKey,
@@ -24,10 +26,22 @@
     checkVadModelStatus,
     downloadVadModel,
     onVadModelDownloadProgress,
+    listQwen3AsrModels,
+    switchQwen3AsrModel,
+    downloadQwen3AsrModel,
+    onQwen3AsrDownloadProgress,
     saveApiKey,
     getApiKey,
   } from '$lib/api';
-  import type { SttMode, WhisperModelId, WhisperModelInfo, DownloadProgress } from '$lib/types';
+  import type {
+    SttMode,
+    WhisperModelId,
+    WhisperModelInfo,
+    DownloadProgress,
+    LocalSttEngine,
+    Qwen3AsrModelId,
+    Qwen3AsrModelInfo,
+  } from '$lib/types';
   import type { UnlistenFn } from '@tauri-apps/api/event';
   import SettingRow from '$lib/components/SettingRow.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
@@ -37,7 +51,7 @@
   import { formatSize, camelCase } from '$lib/utils';
   import SectionHeader from '$lib/components/SectionHeader.svelte';
 
-  // ── Model list from backend ──
+  // ── Whisper model state ──
 
   let models = $state<WhisperModelInfo[]>([]);
   let recommendedModel = $state<WhisperModelId | null>(null);
@@ -48,12 +62,21 @@
   let downloadError = $state(false);
   let unlisten: UnlistenFn | null = null;
 
+  // ── Qwen3-ASR model state ──
+
+  let qwen3Models = $state<Qwen3AsrModelInfo[]>([]);
+  let qwen3DownloadingModelId = $state<Qwen3AsrModelId | null>(null);
+  let qwen3DownloadPercent = $state(0);
+  let qwen3DownloadError = $state(false);
+  let qwen3Unlisten: UnlistenFn | null = null;
+
+  // ── VAD state ──
+
   let vadDownloading = $state(false);
   let vadUnlisten: UnlistenFn | null = null;
 
   async function onVadToggle(checked: boolean) {
     if (checked) {
-      // Check if VAD model exists; download if not
       try {
         const status = await checkVadModelStatus();
         if (!status.downloaded) {
@@ -67,7 +90,6 @@
             } else if (d.status === 'error') {
               vadDownloading = false;
               console.error('VAD model download error:', d.message);
-              // Revert toggle on failure
               setVadEnabled(false);
               saveStt();
               if (vadUnlisten) { vadUnlisten(); vadUnlisten = null; }
@@ -97,8 +119,14 @@
     { value: 'cloud', label: t('settings.stt.modeCloud') },
   ]);
 
+  let localEngineOptions = $derived([
+    { value: 'whisper', label: 'Whisper' },
+    { value: 'qwen3_asr', label: 'Qwen3-ASR' },
+  ]);
+
   let sttConfig = $derived(getSttConfig());
 
+  // ── Whisper model loading ──
 
   async function loadModels() {
     try {
@@ -124,17 +152,14 @@
     await loadModels();
   }
 
-  async function startDownload(modelId: WhisperModelId) {
+  async function startWhisperDownload(modelId: WhisperModelId) {
     downloadingModelId = modelId;
     downloadError = false;
     downloadPercent = 0;
     downloadedBytes = 0;
     totalBytes = 0;
 
-    if (unlisten) {
-      unlisten();
-      unlisten = null;
-    }
+    if (unlisten) { unlisten(); unlisten = null; }
 
     unlisten = await onWhisperModelDownloadProgress((d: DownloadProgress) => {
       if (d.status === 'downloading') {
@@ -161,6 +186,66 @@
       downloadError = true;
       console.error('Failed to start whisper model download:', e);
     }
+  }
+
+  // ── Qwen3-ASR model loading ──
+
+  async function loadQwen3Models() {
+    try {
+      qwen3Models = await listQwen3AsrModels();
+    } catch (e) {
+      console.error('Failed to list Qwen3-ASR models:', e);
+    }
+  }
+
+  async function onSelectQwen3Model(modelId: Qwen3AsrModelId) {
+    if (modelId === sttConfig.qwen3_asr_model) return;
+    setSttQwen3AsrModel(modelId);
+    try {
+      await switchQwen3AsrModel(modelId);
+    } catch (e) {
+      console.error('Failed to switch Qwen3-ASR model:', e);
+    }
+    await loadQwen3Models();
+  }
+
+  async function startQwen3Download(modelId: Qwen3AsrModelId) {
+    qwen3DownloadingModelId = modelId;
+    qwen3DownloadError = false;
+    qwen3DownloadPercent = 0;
+
+    if (qwen3Unlisten) { qwen3Unlisten(); qwen3Unlisten = null; }
+
+    qwen3Unlisten = await onQwen3AsrDownloadProgress((d) => {
+      if (d.status === 'complete') {
+        qwen3DownloadingModelId = null;
+        if (qwen3Unlisten) { qwen3Unlisten(); qwen3Unlisten = null; }
+        loadQwen3Models();
+      } else if (d.status === 'error') {
+        qwen3DownloadingModelId = null;
+        qwen3DownloadError = true;
+        console.error('Qwen3-ASR download error:', d.message);
+        if (qwen3Unlisten) { qwen3Unlisten(); qwen3Unlisten = null; }
+      } else {
+        const pct = d.downloaded && d.total ? (d.downloaded / d.total) * 100 : 0;
+        qwen3DownloadPercent = Math.min(pct, 100);
+      }
+    });
+
+    try {
+      await downloadQwen3AsrModel(modelId);
+    } catch (e) {
+      qwen3DownloadingModelId = null;
+      qwen3DownloadError = true;
+      console.error('Failed to start Qwen3-ASR download:', e);
+    }
+  }
+
+  // ── Engine sub-selector ──
+
+  function onEngineChange(value: string) {
+    setSttLocalEngine(value as LocalSttEngine);
+    saveStt();
   }
 
   // ── Mode change ──
@@ -213,11 +298,13 @@
 
   onMount(() => {
     loadModels();
+    loadQwen3Models();
   });
 
   onDestroy(() => {
     if (unlisten) { unlisten(); unlisten = null; }
     if (vadUnlisten) { vadUnlisten(); vadUnlisten = null; }
+    if (qwen3Unlisten) { qwen3Unlisten(); qwen3Unlisten = null; }
   });
 </script>
 
@@ -241,7 +328,7 @@
     />
   </SettingRow>
 
-  <!-- Local panel: multi-model selector -->
+  <!-- Local panel -->
   {#if sttConfig.mode === 'local'}
     <div class="sub-settings">
       <!-- Language selector (shared) -->
@@ -270,75 +357,145 @@
         {/if}
       </SettingRow>
 
-      <div class="model-list-label">{t('settings.stt.localModel')}</div>
-      <div class="model-list">
-        {#each models as model (model.id)}
-          {@const isActive = model.id === sttConfig.whisper_model}
-          {@const isDownloading = downloadingModelId === model.id}
-          {@const isRecommended = model.id === recommendedModel}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="model-row"
-            class:active={isActive}
-            class:disabled={!model.downloaded && !isDownloading}
-            onclick={() => model.downloaded && onSelectModel(model.id)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); model.downloaded && onSelectModel(model.id); } }}
-            role="radio"
-            aria-checked={isActive}
-            tabindex="0"
-          >
-            <!-- Radio indicator -->
-            <div class="model-radio" class:checked={isActive}>
-              {#if isActive}
-                <div class="model-radio-dot"></div>
-              {/if}
-            </div>
+      <!-- Engine sub-selector -->
+      <SettingRow name={t('settings.stt.localEngine')} desc={(sttConfig.local_engine ?? 'whisper') === 'whisper' ? t('settings.stt.localEngineDescWhisper') : t('settings.stt.localEngineDescQwen3Asr')}>
+        <SegmentedControl
+          options={localEngineOptions}
+          value={sttConfig.local_engine ?? 'whisper'}
+          onchange={onEngineChange}
+        />
+      </SettingRow>
 
-            <!-- Info -->
-            <div class="model-info">
-              <div class="model-name-row">
-                <span class="model-name">{t(`sttModel.${camelCase(model.id)}.name`)}</span>
-                {#if isRecommended}
-                  <span class="model-badge">{t('settings.stt.recommended')}</span>
+      <!-- Whisper model list -->
+      {#if (sttConfig.local_engine ?? 'whisper') === 'whisper'}
+        <div class="model-list-label">{t('settings.stt.localModel')}</div>
+        <div class="model-list">
+          {#each models as model (model.id)}
+            {@const isActive = model.id === sttConfig.whisper_model}
+            {@const isDownloading = downloadingModelId === model.id}
+            {@const isRecommended = model.id === recommendedModel}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="model-row"
+              class:active={isActive}
+              class:disabled={!model.downloaded && !isDownloading}
+              onclick={() => model.downloaded && onSelectModel(model.id)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); model.downloaded && onSelectModel(model.id); } }}
+              role="radio"
+              aria-checked={isActive}
+              tabindex="0"
+            >
+              <div class="model-radio" class:checked={isActive}>
+                {#if isActive}
+                  <div class="model-radio-dot"></div>
                 {/if}
               </div>
-              <div class="model-desc">{t(`sttModel.${camelCase(model.id)}.desc`)}</div>
-              <div class="model-size">{formatSize(model.size_bytes)}</div>
+              <div class="model-info">
+                <div class="model-name-row">
+                  <span class="model-name">{t(`sttModel.${camelCase(model.id)}.name`)}</span>
+                  {#if isRecommended}
+                    <span class="model-badge">{t('settings.stt.recommended')}</span>
+                  {/if}
+                </div>
+                <div class="model-desc">{t(`sttModel.${camelCase(model.id)}.desc`)}</div>
+                <div class="model-size">{formatSize(model.size_bytes)}</div>
+              </div>
+              <div class="model-action">
+                {#if model.downloaded}
+                  <span class="model-downloaded-check">
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path d="M2.5 7.5L5.5 10.5L11.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                {:else if isDownloading}
+                  <span class="model-downloading-label">{Math.round(downloadPercent)}%</span>
+                {:else}
+                  <button
+                    class="model-download-btn"
+                    onclick={(e) => { e.stopPropagation(); startWhisperDownload(model.id); }}
+                  >
+                    {t('settings.stt.download')}
+                  </button>
+                {/if}
+              </div>
             </div>
 
-            <!-- Action -->
-            <div class="model-action">
-              {#if model.downloaded}
-                <span class="model-downloaded-check">
-                  <svg viewBox="0 0 14 14" fill="none">
-                    <path d="M2.5 7.5L5.5 10.5L11.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </span>
-              {:else if isDownloading}
-                <span class="model-downloading-label">{Math.round(downloadPercent)}%</span>
-              {:else}
-                <button
-                  class="model-download-btn"
-                  onclick={(e) => { e.stopPropagation(); startDownload(model.id); }}
-                >
-                  {t('settings.stt.download')}
-                </button>
-              {/if}
-            </div>
-          </div>
+            {#if isDownloading}
+              <div class="model-progress-wrap">
+                <ProgressBar
+                  percent={downloadPercent}
+                  label="{Math.round(downloadPercent)}%"
+                  sublabel="{formatSize(downloadedBytes)} / {formatSize(totalBytes)}"
+                  shimmer
+                />
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
 
-          {#if isDownloading}
-            <div class="model-progress-wrap">
-              <ProgressBar
-                percent={downloadPercent}
-                label="{Math.round(downloadPercent)}%"
-                sublabel="{formatSize(downloadedBytes)} / {formatSize(totalBytes)}"
-                shimmer
-              />
+      <!-- Qwen3-ASR model list -->
+      {#if (sttConfig.local_engine ?? 'whisper') === 'qwen3_asr'}
+        <div class="model-list-label">{t('settings.stt.localModel')}</div>
+        <div class="model-list">
+          {#each qwen3Models as model (model.id)}
+            {@const isActive = model.id === (sttConfig.qwen3_asr_model ?? 'qwen3_asr1_7_b')}
+            {@const isThisDownloading = model.id === qwen3DownloadingModelId}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="model-row"
+              class:active={isActive}
+              class:disabled={!model.downloaded && !isThisDownloading}
+              onclick={() => model.downloaded && onSelectQwen3Model(model.id)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); model.downloaded && onSelectQwen3Model(model.id); } }}
+              role="radio"
+              aria-checked={isActive}
+              tabindex="0"
+            >
+              <div class="model-radio" class:checked={isActive}>
+                {#if isActive}
+                  <div class="model-radio-dot"></div>
+                {/if}
+              </div>
+              <div class="model-info">
+                <div class="model-name-row">
+                  <span class="model-name">{t(`sttModel.${camelCase(model.id)}.name`)}</span>
+                </div>
+                <div class="model-desc">{t(`sttModel.${camelCase(model.id)}.desc`)}</div>
+                <div class="model-size">{formatSize(model.size_bytes)}</div>
+              </div>
+              <div class="model-action">
+                {#if model.downloaded}
+                  <span class="model-downloaded-check">
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path d="M2.5 7.5L5.5 10.5L11.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                {:else if isThisDownloading}
+                  <span class="model-downloading-label">{Math.round(qwen3DownloadPercent)}%</span>
+                {:else}
+                  <button
+                    class="model-download-btn"
+                    onclick={(e) => { e.stopPropagation(); startQwen3Download(model.id); }}
+                  >
+                    {t('settings.stt.download')}
+                  </button>
+                {/if}
+              </div>
             </div>
-          {/if}
-        {/each}
-      </div>
+
+            {#if isThisDownloading}
+              <div class="model-progress-wrap">
+                <ProgressBar
+                  percent={qwen3DownloadPercent}
+                  label="{Math.round(qwen3DownloadPercent)}%"
+                  shimmer
+                />
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 
