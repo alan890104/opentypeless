@@ -240,3 +240,8 @@ export const onQwen3AsrDownloadProgress = (
   cb: (p: DownloadProgress & { current_file?: string; file_index?: number; file_count?: number }) => void,
 ): Promise<UnlistenFn> =>
   listen('qwen3-asr-download-progress', (e) => cb(e.payload as DownloadProgress & { current_file?: string; file_index?: number; file_count?: number }));
+
+export const onModelSwitching = (
+  cb: (p: { status: 'start' | 'done' }) => void,
+): Promise<UnlistenFn> =>
+  listen('model-switching', (e) => cb(e.payload as { status: 'start' | 'done' }));

@@ -55,6 +55,7 @@
 
   let models = $state<WhisperModelInfo[]>([]);
   let recommendedModel = $state<WhisperModelId | null>(null);
+  let whisperSwitching = $state(false);
   let downloadingModelId = $state<WhisperModelId | null>(null);
   let downloadPercent = $state(0);
   let downloadedBytes = $state(0);
@@ -65,6 +66,7 @@
   // ── Qwen3-ASR model state ──
 
   let qwen3Models = $state<Qwen3AsrModelInfo[]>([]);
+  let qwen3Switching = $state(false);
   let qwen3DownloadingModelId = $state<Qwen3AsrModelId | null>(null);
   let qwen3DownloadPercent = $state(0);
   let qwen3DownloadError = $state(false);
@@ -143,12 +145,16 @@
 
   async function onSelectModel(modelId: WhisperModelId) {
     if (modelId === sttConfig.whisper_model) return;
+    const prevModelId = sttConfig.whisper_model;
     setSttWhisperModel(modelId);
+    whisperSwitching = true;
     try {
       await switchWhisperModel(modelId);
     } catch (e) {
       console.error('Failed to switch whisper model:', e);
+      setSttWhisperModel(prevModelId); // revert optimistic update on failure
     }
+    whisperSwitching = false;
     await loadModels();
   }
 
@@ -200,12 +206,16 @@
 
   async function onSelectQwen3Model(modelId: Qwen3AsrModelId) {
     if (modelId === sttConfig.qwen3_asr_model) return;
+    const prevModelId = sttConfig.qwen3_asr_model;
     setSttQwen3AsrModel(modelId);
+    qwen3Switching = true;
     try {
       await switchQwen3AsrModel(modelId);
     } catch (e) {
       console.error('Failed to switch Qwen3-ASR model:', e);
+      setSttQwen3AsrModel(prevModelId ?? 'qwen3_asr1_7_b'); // revert optimistic update on failure
     }
+    qwen3Switching = false;
     await loadQwen3Models();
   }
 
@@ -369,24 +379,27 @@
       <!-- Whisper model list -->
       {#if (sttConfig.local_engine ?? 'whisper') === 'whisper'}
         <div class="model-list-label">{t('settings.stt.localModel')}</div>
-        <div class="model-list">
+        <div class="model-list" class:switching={whisperSwitching}>
           {#each models as model (model.id)}
             {@const isActive = model.id === sttConfig.whisper_model}
             {@const isDownloading = downloadingModelId === model.id}
             {@const isRecommended = model.id === recommendedModel}
+            {@const isSwitchingThis = whisperSwitching && isActive}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="model-row"
               class:active={isActive}
-              class:disabled={!model.downloaded && !isDownloading}
-              onclick={() => model.downloaded && onSelectModel(model.id)}
-              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); model.downloaded && onSelectModel(model.id); } }}
+              class:disabled={(!model.downloaded && !isDownloading) || whisperSwitching}
+              onclick={() => !whisperSwitching && model.downloaded && onSelectModel(model.id)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); !whisperSwitching && model.downloaded && onSelectModel(model.id); } }}
               role="radio"
               aria-checked={isActive}
               tabindex="0"
             >
               <div class="model-radio" class:checked={isActive}>
-                {#if isActive}
+                {#if isSwitchingThis}
+                  <div class="model-inline-spinner"></div>
+                {:else if isActive}
                   <div class="model-radio-dot"></div>
                 {/if}
               </div>
@@ -437,23 +450,26 @@
       <!-- Qwen3-ASR model list -->
       {#if (sttConfig.local_engine ?? 'whisper') === 'qwen3_asr'}
         <div class="model-list-label">{t('settings.stt.localModel')}</div>
-        <div class="model-list">
+        <div class="model-list" class:switching={qwen3Switching}>
           {#each qwen3Models as model (model.id)}
             {@const isActive = model.id === (sttConfig.qwen3_asr_model ?? 'qwen3_asr1_7_b')}
             {@const isThisDownloading = model.id === qwen3DownloadingModelId}
+            {@const isSwitchingThis = qwen3Switching && isActive}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="model-row"
               class:active={isActive}
-              class:disabled={!model.downloaded && !isThisDownloading}
-              onclick={() => model.downloaded && onSelectQwen3Model(model.id)}
-              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); model.downloaded && onSelectQwen3Model(model.id); } }}
+              class:disabled={(!model.downloaded && !isThisDownloading) || qwen3Switching}
+              onclick={() => !qwen3Switching && model.downloaded && onSelectQwen3Model(model.id)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); !qwen3Switching && model.downloaded && onSelectQwen3Model(model.id); } }}
               role="radio"
               aria-checked={isActive}
               tabindex="0"
             >
               <div class="model-radio" class:checked={isActive}>
-                {#if isActive}
+                {#if isSwitchingThis}
+                  <div class="model-inline-spinner"></div>
+                {:else if isActive}
                   <div class="model-radio-dot"></div>
                 {/if}
               </div>
@@ -689,6 +705,24 @@
 
   .model-progress-wrap {
     padding: 0 12px 8px;
+  }
+
+  .model-list.switching {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  .model-inline-spinner {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid rgba(0, 0, 0, 0.1);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   .vad-downloading {

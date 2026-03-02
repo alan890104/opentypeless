@@ -305,6 +305,7 @@
   "overlay.edited": "已編輯",
   "overlay.editRequiresPolish": "編輯功能需要啟用 AI 潤飾",
   "overlay.undo": "復原",
+  "overlay.modelSwitching": "正在載入模型…",
   "nav.stats": "首頁",
   "stats.heroTitle": "自然說話，完美書寫",
   "stats.heroSubtitle": "按下",

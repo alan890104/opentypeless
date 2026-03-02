@@ -24,7 +24,8 @@ pub fn warm_qwen3_asr(
     cache: &Mutex<Option<Qwen3AsrCache>>,
     model: &Qwen3AsrModel,
 ) -> Result<(), String> {
-    let mut guard = cache.lock().map_err(|e| e.to_string())?;
+    // Recover from a poisoned mutex (caused by a panic in a prior warm/transcribe call).
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
 
     // Already loaded with the right model?
     if let Some(ref c) = *guard {
@@ -65,7 +66,7 @@ pub fn transcribe_with_cached_qwen3_asr(
     // Ensure the engine is ready.
     warm_qwen3_asr(cache, model)?;
 
-    let guard = cache.lock().map_err(|e| e.to_string())?;
+    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     let c = guard.as_ref().ok_or("Qwen3-ASR cache empty after warm")?;
 
     let lang_opt: Option<&str> = if language == "auto" || language.is_empty() {

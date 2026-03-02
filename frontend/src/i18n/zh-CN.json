@@ -305,6 +305,7 @@
   "overlay.edited": "已编辑",
   "overlay.editRequiresPolish": "编辑功能需要启用 AI 润色",
   "overlay.undo": "撤销",
+  "overlay.modelSwitching": "正在加载模型…",
   "nav.stats": "首页",
   "stats.heroTitle": "自然说话，完美书写",
   "stats.heroSubtitle": "按下",

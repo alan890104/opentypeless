@@ -5,6 +5,7 @@
     onRecordingStatus,
     onRecordingMaxDuration,
     onAudioLevels,
+    onModelSwitching,
     triggerUndo,
     getSettings,
   } from '$lib/api';
@@ -34,7 +35,8 @@
     | 'error'
     | 'edited'
     | 'edit_requires_polish'
-    | 'undo';
+    | 'undo'
+    | 'switching';
 
   let phase: Phase = $state('preparing');
   let timerText: string = $state('0:00');
@@ -83,6 +85,8 @@
         return 'capsule result error-state';
       case 'undo':
         return 'capsule undo-state';
+      case 'switching':
+        return 'capsule switching';
       default:
         return 'capsule';
     }
@@ -112,6 +116,8 @@
         return t('overlay.edited');
       case 'undo':
         return t('overlay.undo');
+      case 'switching':
+        return t('overlay.modelSwitching');
       default:
         return '';
     }
@@ -124,7 +130,7 @@
   }
 
   let showDot: boolean = $derived.by(() => false); // dot is never shown in practice (CSS handles it on .recording)
-  let showSpinner: boolean = $derived.by(() => is('preparing', 'processing', 'transcribing', 'polishing'));
+  let showSpinner: boolean = $derived.by(() => is('preparing', 'processing', 'transcribing', 'polishing', 'switching'));
   let showWaveform: boolean = $derived.by(() => is('recording'));
   let showIconResult: boolean = $derived.by(() => is('pasted', 'copied', 'error', 'edit_requires_polish', 'edited'));
   let showTimer: boolean = $derived.by(() => is('recording'));
@@ -133,6 +139,7 @@
   let isCheckIcon: boolean = $derived.by(() => is('pasted', 'copied', 'edited'));
   let isErrorIcon: boolean = $derived.by(() => is('error', 'edit_requires_polish'));
   let isPolishSpinner: boolean = $derived.by(() => is('polishing'));
+  let isSwitchingSpinner: boolean = $derived.by(() => is('switching'));
 
   // ── Waveform animation ──
   function animateWaveform() {
@@ -393,7 +400,17 @@
     const u3 = await onAudioLevels((levels) => {
       targetLevels = levels;
     });
-    unlisteners = [u1, u2, u3];
+    const u4 = await onModelSwitching((p) => {
+      if (p.status === 'start') {
+        clearCommon();
+        phase = 'switching';
+      } else if (p.status === 'done') {
+        // Reset directly — do not rely on visibilitychange, which is not
+        // triggered by alpha-zero hiding (alpha=0 ≠ document.hidden in WKWebView).
+        setPreparing();
+      }
+    });
+    unlisteners = [u1, u2, u3, u4];
   });
 
   onDestroy(() => {
@@ -422,7 +439,7 @@
 
   <!-- Spinner -->
   {#if showSpinner}
-    <div class="spinner" class:polish-spinner={isPolishSpinner}></div>
+    <div class="spinner" class:polish-spinner={isPolishSpinner} class:switching-spinner={isSwitchingSpinner}></div>
   {/if}
 
   <!-- Waveform canvas -->
@@ -582,6 +599,10 @@
     border-top-color: #c084fc;
   }
 
+  .spinner.switching-spinner {
+    border-top-color: #9ca3af;
+  }
+
   @keyframes spin {
     to {
       transform: rotate(360deg);
@@ -738,6 +759,11 @@
 
   .capsule.result.error-state {
     border-color: rgba(255, 59, 48, 0.2);
+  }
+
+  /* ── State: Switching (gray, neutral) ── */
+  .capsule.switching {
+    border-color: rgba(156, 163, 175, 0.2);
   }
 
   /* ── State: Undo ── */

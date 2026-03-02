@@ -62,6 +62,7 @@ pub struct AppState {
     pub downloading: AtomicBool,
     pub audio_thread: Mutex<Option<audio::AudioThreadControl>>,
     pub qwen3_asr_ctx: Mutex<Option<qwen3_asr::Qwen3AsrCache>>,
+    pub model_switching: AtomicBool,
 }
 
 /// Restore original clipboard content from saved_clipboard.
@@ -760,6 +761,7 @@ pub fn run() {
                 downloading: AtomicBool::new(false),
                 audio_thread: Mutex::new(audio_thread_init),
                 qwen3_asr_ctx: Mutex::new(None),
+                model_switching: AtomicBool::new(false),
             });
 
             // Migration: if old zh-TW model exists but settings use default (LargeV3Turbo)
@@ -965,6 +967,10 @@ pub fn run() {
                             }
 
                             if state.is_processing.load(Ordering::SeqCst) {
+                                return;
+                            }
+
+                            if state.model_switching.load(Ordering::SeqCst) {
                                 return;
                             }
 

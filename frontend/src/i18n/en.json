@@ -312,6 +312,7 @@
   "overlay.edited": "Edited",
   "overlay.editRequiresPolish": "AI polishing required for editing",
   "overlay.undo": "Undo",
+  "overlay.modelSwitching": "Loading model…",
   "nav.stats": "Home",
   "stats.heroTitle": "Speak naturally, write perfectly",
   "stats.heroSubtitle": "Press",

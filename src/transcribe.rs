@@ -133,9 +133,10 @@ pub fn warm_whisper_cache(
 ) -> Result<(), String> {
     let model_path = whisper_model_path_for(model)?;
 
+    // Recover from a poisoned mutex (caused by a panic in a prior warm/transcribe call).
     let mut cache_guard = whisper_cache
         .lock()
-        .map_err(|e| format!("Failed to lock whisper context: {}", e))?;
+        .unwrap_or_else(|e| e.into_inner());
 
     let load_start = Instant::now();
     tracing::info!("Pre-warming Whisper model: {} ...", model.display_name());
@@ -175,9 +176,10 @@ pub fn transcribe_with_cached_whisper(
 
     let model_path = whisper_model_path_for(model)?;
 
+    // Recover from a poisoned mutex (caused by a panic in a prior warm/transcribe call).
     let mut cache_guard = whisper_cache
         .lock()
-        .map_err(|e| format!("Failed to lock whisper context: {}", e))?;
+        .unwrap_or_else(|e| e.into_inner());
 
     // Check if we need to (re)load the model
     let needs_reload = match cache_guard.as_ref() {

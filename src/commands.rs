@@ -1355,16 +1355,62 @@ pub fn get_whisper_model_recommendation(state: State<'_, AppState>) -> WhisperMo
 }
 
 #[tauri::command]
-pub fn switch_whisper_model(state: State<'_, AppState>, model: WhisperModel) -> Result<(), String> {
-    {
-        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.stt.whisper_model = model.clone();
-        settings::save_settings_to_disk(&settings);
+pub fn switch_whisper_model(app: AppHandle, state: State<'_, AppState>, model: WhisperModel) -> Result<(), String> {
+    // Atomically claim the switching slot — prevents concurrent calls from racing.
+    if state.model_switching.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("Model switch already in progress".to_string());
     }
 
-    // Pre-warm the new model so the first transcription is instant
-    if let Err(e) = crate::transcribe::warm_whisper_cache(&state.whisper_ctx, &model) {
-        tracing::error!("Failed to pre-warm whisper model: {}", e);
+    // Guard: refuse if recording or processing is already in progress.
+    if state.is_recording.load(Ordering::SeqCst) || state.is_processing.load(Ordering::SeqCst) {
+        state.model_switching.store(false, Ordering::SeqCst);
+        return Err("Cannot switch model while recording or processing".to_string());
+    }
+
+    match state.settings.lock() {
+        Ok(mut s) => {
+            s.stt.whisper_model = model.clone();
+            settings::save_settings_to_disk(&s);
+        }
+        Err(e) => {
+            state.model_switching.store(false, Ordering::SeqCst);
+            return Err(e.to_string());
+        }
+    }
+
+    // Show overlay on main thread (Cocoa APIs are thread-affine).
+    {
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(ov) = app2.get_webview_window("overlay") {
+                platform::show_overlay(&ov);
+                let _ = ov.emit("model-switching", serde_json::json!({"status": "start"}));
+            }
+        });
+    }
+
+    // Pre-warm the new model. Use catch_unwind so model_switching is always cleared
+    // even if whisper-rs panics on a corrupt model file.
+    let warm_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::transcribe::warm_whisper_cache(&state.whisper_ctx, &model)
+    }));
+
+    // Always clear flag and hide overlay regardless of warm outcome.
+    state.model_switching.store(false, Ordering::SeqCst);
+    {
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(ov) = app2.get_webview_window("overlay") {
+                let _ = ov.emit("model-switching", serde_json::json!({"status": "done"}));
+                platform::hide_overlay(&ov);
+            }
+        });
+    }
+
+    match warm_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!("Failed to pre-warm whisper model: {}", e),
+        Err(_) => tracing::error!("Whisper model pre-warm panicked"),
     }
 
     Ok(())
@@ -1851,21 +1897,73 @@ pub fn list_qwen3_asr_models(state: State<'_, AppState>) -> Vec<Qwen3AsrModelInf
 
 #[tauri::command]
 pub fn switch_qwen3_asr_model(
+    app: AppHandle,
     state: State<'_, AppState>,
     model: Qwen3AsrModel,
 ) -> Result<(), String> {
-    {
-        let mut guard = state.settings.lock().map_err(|e| e.to_string())?;
-        guard.stt.qwen3_asr_model = model.clone();
-        settings::save_settings_to_disk(&guard);
+    // Atomically claim the switching slot — prevents concurrent calls from racing.
+    if state.model_switching.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("Model switch already in progress".to_string());
     }
+
+    // Guard: refuse if recording or processing is already in progress.
+    if state.is_recording.load(Ordering::SeqCst) || state.is_processing.load(Ordering::SeqCst) {
+        state.model_switching.store(false, Ordering::SeqCst);
+        return Err("Cannot switch model while recording or processing".to_string());
+    }
+
+    match state.settings.lock() {
+        Ok(mut s) => {
+            s.stt.qwen3_asr_model = model.clone();
+            settings::save_settings_to_disk(&s);
+        }
+        Err(e) => {
+            state.model_switching.store(false, Ordering::SeqCst);
+            return Err(e.to_string());
+        }
+    }
+
     // Invalidate stale cache so next transcription loads the new model.
     qwen3::invalidate_qwen3_asr_cache(&state.qwen3_asr_ctx);
+
     // Pre-warm inline if already downloaded.
     if crate::stt::is_qwen3_asr_downloaded(&model) {
-        if let Err(e) = qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model) {
-            tracing::warn!("switch_qwen3_asr_model: pre-warm failed: {}", e);
+        // Show overlay on main thread (Cocoa APIs are thread-affine).
+        {
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(ov) = app2.get_webview_window("overlay") {
+                    platform::show_overlay(&ov);
+                    let _ = ov.emit("model-switching", serde_json::json!({"status": "start"}));
+                }
+            });
         }
+
+        // Pre-warm. Use catch_unwind so model_switching is always cleared on panic.
+        let warm_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model)
+        }));
+
+        // Always clear flag and hide overlay.
+        state.model_switching.store(false, Ordering::SeqCst);
+        {
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(ov) = app2.get_webview_window("overlay") {
+                    let _ = ov.emit("model-switching", serde_json::json!({"status": "done"}));
+                    platform::hide_overlay(&ov);
+                }
+            });
+        }
+
+        match warm_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("switch_qwen3_asr_model: pre-warm failed: {}", e),
+            Err(_) => tracing::error!("switch_qwen3_asr_model: pre-warm panicked"),
+        }
+    } else {
+        // Model not yet downloaded — clear the flag immediately (no overlay needed).
+        state.model_switching.store(false, Ordering::SeqCst);
     }
     Ok(())
 }
