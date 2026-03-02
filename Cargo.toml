@@ -1,6 +1,6 @@
 [package]
 name = "sumi"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Your voice, in writing — AI-powered speech-to-text"
 license = "GPL-3.0-or-later"
