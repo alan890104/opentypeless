@@ -2,9 +2,10 @@ use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
+use windows::Win32::Graphics::Dwm::{DwmEnableBlurBehindWindow, DWM_BB_ENABLE, DWM_BLURBEHIND};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::Win32::Foundation::HWND;
@@ -21,15 +22,39 @@ pub fn set_accessory_policy() {}
 /// Configure a window as a non-activating, always-on-top overlay.
 pub unsafe fn setup_overlay(hwnd: *mut std::ffi::c_void) {
     let hwnd = HWND(hwnd);
+
     // OR in the required flags instead of replacing all extended styles.
     // tao sets up DWM blur-behind during window creation for `transparent: true`
-    // windows. A full EXSTYLE replacement triggers WM_STYLECHANGED, which causes
-    // DWM to re-evaluate compositing and can reset the blur-behind transparency
-    // state, producing a visible opaque rectangle behind the capsule on Windows.
+    // windows. A full EXSTYLE replacement triggers WM_STYLECHANGED, which can
+    // disrupt DWM compositing state and produce a visible rectangle behind the
+    // capsule on Windows.
     let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     let ex_style = current | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0 as isize;
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style);
-    let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+    // MSDN requires SWP_FRAMECHANGED after any SetWindowLongPtrW(GWL_EXSTYLE)
+    // call to flush cached frame data and prompt DWM to re-evaluate the window
+    // geometry. SWP_NOACTIVATE prevents the overlay from stealing focus.
+    let _ = SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+    );
+
+    // Defensively re-establish DWM blur-behind. tao sets this once at window
+    // creation; the style change and SWP_FRAMECHANGED above may cause DWM to
+    // re-evaluate compositing. Re-calling here ensures the WebView2 transparent
+    // background composites against the desktop rather than an opaque surface.
+    // On Windows 10/11 the blur visual is suppressed but the compositing mode
+    // (black-pixel-as-transparent) remains active through this call.
+    let bb = DWM_BLURBEHIND {
+        dwFlags: DWM_BB_ENABLE,
+        fEnable: true.into(),
+        hRgnBlur: Default::default(), // null → entire client area
+        fTransitionOnMaximized: false.into(),
+    };
+    let _ = DwmEnableBlurBehindWindow(hwnd, &bb);
 }
 
 /// Show the overlay without activating it.
