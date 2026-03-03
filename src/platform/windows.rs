@@ -3,7 +3,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
+    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
     SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
@@ -21,7 +21,13 @@ pub fn set_accessory_policy() {}
 /// Configure a window as a non-activating, always-on-top overlay.
 pub unsafe fn setup_overlay(hwnd: *mut std::ffi::c_void) {
     let hwnd = HWND(hwnd);
-    let ex_style = (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0 as isize;
+    // OR in the required flags instead of replacing all extended styles.
+    // tao sets up DWM blur-behind during window creation for `transparent: true`
+    // windows. A full EXSTYLE replacement triggers WM_STYLECHANGED, which causes
+    // DWM to re-evaluate compositing and can reset the blur-behind transparency
+    // state, producing a visible opaque rectangle behind the capsule on Windows.
+    let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    let ex_style = current | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0 as isize;
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style);
     let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 }
