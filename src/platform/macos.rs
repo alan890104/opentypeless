@@ -455,9 +455,9 @@ unsafe extern "C" fn on_default_input_changed(
     client_data: *mut c_void,
 ) -> i32 {
     if client_data.is_null() { return 0; }
-    // Reconstruct a shared reference to the Box<dyn Fn()> without taking ownership.
+    // Reconstruct a shared reference to the Box<dyn Fn() + Send> without taking ownership.
     // The pointer was leaked intentionally and lives for the process lifetime.
-    let cb = &*(client_data as *const Box<dyn Fn()>);
+    let cb = &*(client_data as *const Box<dyn Fn() + Send>);
     cb();
     0
 }
@@ -468,7 +468,7 @@ unsafe extern "C" fn on_default_input_changed(
 pub fn add_default_input_listener(callback: impl Fn() + Send + 'static) {
     // Double-box so we get a thin pointer to a fat-pointer trait object.
     // `Box::into_raw` leaks intentionally — the listener is permanent.
-    let boxed: Box<dyn Fn()> = Box::new(callback);
+    let boxed: Box<dyn Fn() + Send> = Box::new(callback);
     let raw = Box::into_raw(Box::new(boxed)) as *mut c_void;
 
     let addr = AudioObjectPropertyAddress {

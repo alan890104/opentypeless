@@ -287,7 +287,7 @@
   "test.step3.next": "Next",
   "test.step4.title": "Try it in Gmail!",
   "test.step4.instruction": "Click the email body, press {hotkey} to start, speak, then press {hotkey} again to stop",
-  "test.step4.sampleText": "Try saying: “嗨 Alice，我們明天還是照原計劃吃午餐嗎？Alan”",
+  "test.step4.sampleText": "Try saying: “Hi Alice, are we still on for lunch tomorrow? Alan”",
   "test.step4.done": "Done",
   "test.breadcrumb.polishCheck": "Polish",
   "test.breadcrumb.editByVoice": "Edit by Voice",

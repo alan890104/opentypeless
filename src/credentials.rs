@@ -19,13 +19,24 @@ fn keychain_service(provider: &str) -> String {
 
 #[cfg(target_os = "macos")]
 pub fn save(provider: &str, key: &str) -> Result<(), String> {
-    use security_framework::passwords::{set_generic_password_options, PasswordOptions};
+    use security_framework::passwords::{delete_generic_password_options, set_generic_password_options, PasswordOptions};
+    const ERR_DUPLICATE: i32 = -25299;        // errSecDuplicateItem
     const ERR_MISSING_ENTITLEMENT: i32 = -34018; // errSecMissingEntitlement
 
     let mut opts = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
     opts.use_protected_keychain();
     match set_generic_password_options(key.as_bytes(), opts) {
         Ok(()) => return Ok(()),
+        Err(e) if e.code() == ERR_DUPLICATE => {
+            // Item already exists — delete then re-add with the updated value.
+            let mut del = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
+            del.use_protected_keychain();
+            let _ = delete_generic_password_options(del);
+            let mut opts2 = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
+            opts2.use_protected_keychain();
+            return set_generic_password_options(key.as_bytes(), opts2)
+                .map_err(|e| format!("Keychain update failed: {}", e));
+        }
         Err(e) if e.code() == ERR_MISSING_ENTITLEMENT => {
             // App isn't signed with keychain-access-groups yet (e.g. raw cargo build).
             // Fall back to security CLI so the key is never silently dropped.
@@ -94,9 +105,15 @@ pub fn load(provider: &str) -> Result<String, String> {
     if has_entitlement {
         match save(provider, &key) {
             Ok(()) => {
-                let _ = std::process::Command::new("/usr/bin/security")
+                let out = std::process::Command::new("/usr/bin/security")
                     .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
                     .output();
+                if let Ok(o) = out {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    if !stderr.trim().is_empty() {
+                        tracing::warn!("Legacy Keychain entry cleanup may have failed: {}", stderr.trim());
+                    }
+                }
             }
             Err(e) => tracing::warn!("Keychain migration failed: {}", e),
         }
@@ -108,7 +125,8 @@ pub fn load(provider: &str) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 pub fn delete(provider: &str) -> Result<(), String> {
     use security_framework::passwords::{delete_generic_password_options, PasswordOptions};
-    const ERR_NOT_FOUND: i32 = -25300; // errSecItemNotFound
+    const ERR_NOT_FOUND: i32 = -25300;         // errSecItemNotFound
+    const ERR_MISSING_ENTITLEMENT: i32 = -34018; // errSecMissingEntitlement
 
     // Remove from Data Protection Keychain.
     let mut opts = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
@@ -116,6 +134,7 @@ pub fn delete(provider: &str) -> Result<(), String> {
     let result = match delete_generic_password_options(opts) {
         Ok(()) => Ok(()),
         Err(e) if e.code() == ERR_NOT_FOUND => Ok(()),
+        Err(e) if e.code() == ERR_MISSING_ENTITLEMENT => Ok(()), // unsigned build — nothing to delete
         Err(e) => Err(format!("Keychain delete failed: {}", e)),
     };
 
