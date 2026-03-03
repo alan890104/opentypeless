@@ -297,7 +297,7 @@ extern "C" {
         buffer: *mut i8,
         buffer_size: i64,
         encoding: u32,
-    ) -> bool;
+    ) -> u8; // Boolean = unsigned char, not C99 _Bool
 }
 
 // CoreAudio system object and property selectors (fourCC literals)
@@ -325,7 +325,7 @@ unsafe fn cfstring_to_string(cf_str: *mut c_void) -> String {
     }
     // Slow path: copy into a stack buffer
     let mut buf = [0i8; 512];
-    if CFStringGetCString(cf_str, buf.as_mut_ptr(), buf.len() as i64, K_CF_STRING_UTF8) {
+    if CFStringGetCString(cf_str, buf.as_mut_ptr(), buf.len() as i64, K_CF_STRING_UTF8) != 0 {
         return std::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap_or("").to_string();
     }
     String::new()

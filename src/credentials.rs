@@ -31,7 +31,9 @@ pub fn save(provider: &str, key: &str) -> Result<(), String> {
             // Item already exists — delete then re-add with the updated value.
             let mut del = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
             del.use_protected_keychain();
-            let _ = delete_generic_password_options(del);
+            if let Err(e) = delete_generic_password_options(del) {
+                tracing::warn!("Keychain delete (before update) failed: {} — subsequent add may fail", e);
+            }
             let mut opts2 = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
             opts2.use_protected_keychain();
             return set_generic_password_options(key.as_bytes(), opts2)

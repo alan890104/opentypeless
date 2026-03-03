@@ -802,18 +802,23 @@ pub fn run() {
                     }
                     state.mic_available.store(false, Ordering::SeqCst);
 
-                    // resolve_input_device runs inside spawn_audio_thread automatically.
-                    match audio::try_reconnect_audio(
-                        &state.mic_available,
-                        &state.sample_rate,
-                        &state.buffer,
-                        &state.is_recording,
-                        &state.audio_thread,
-                        None,
-                    ) {
-                        Ok(()) => tracing::info!("Mic stream reconnected after input device change"),
-                        Err(e) => tracing::error!("Mic stream reconnect failed: {}", e),
-                    }
+                    // Dispatch to a background thread — CoreAudio HAL callbacks must return
+                    // quickly; try_reconnect_audio blocks for up to 5 s (recv_timeout).
+                    let app2 = app_for_listener.clone();
+                    std::thread::spawn(move || {
+                        let state = app2.state::<AppState>();
+                        match audio::try_reconnect_audio(
+                            &state.mic_available,
+                            &state.sample_rate,
+                            &state.buffer,
+                            &state.is_recording,
+                            &state.audio_thread,
+                            None,
+                        ) {
+                            Ok(()) => tracing::info!("Mic stream reconnected after input device change"),
+                            Err(e) => tracing::error!("Mic stream reconnect failed: {}", e),
+                        }
+                    });
                 });
             }
 
