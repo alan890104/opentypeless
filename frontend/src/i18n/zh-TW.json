@@ -348,8 +348,12 @@
   "settings.stt.localEngine": "本地引擎",
   "settings.stt.localEngineDescWhisper": "支援 99+ 語言，多語言覆蓋廣。",
   "settings.stt.localEngineDescQwen3Asr": "30 種語言、22 種中文方言，帶口音及嘈雜環境更準確。",
-  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B",
+  "sttModel.qwen3Asr17BFull.name": "Qwen3-ASR 1.7B BF16",
+  "sttModel.qwen3Asr17BFull.desc": "全精度 BF16，無量化損失，檔案最大",
+  "sttModel.qwen3Asr17B.name": "Qwen3-ASR 1.7B Q4",
   "sttModel.qwen3Asr17B.desc": "精度最高，適合高要求場景",
+  "sttModel.qwen3Asr17BQ8.name": "Qwen3-ASR 1.7B Q8",
+  "sttModel.qwen3Asr17BQ8.desc": "最高精度，8-bit 權重，檔案較大但無 Q4 量化損失",
   "sttModel.qwen3Asr06B.name": "Qwen3-ASR 0.6B",
   "sttModel.qwen3Asr06B.desc": "輕量快速，精度略低於 1.7B"
 }

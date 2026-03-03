@@ -22,7 +22,7 @@ export type WhisperModelId =
 
 export type LocalSttEngine = 'whisper' | 'qwen3_asr';
 
-export type Qwen3AsrModelId = 'qwen3_asr1_7_b' | 'qwen3_asr0_6_b';
+export type Qwen3AsrModelId = 'qwen3_asr1_7_b_full' | 'qwen3_asr1_7_b_q8' | 'qwen3_asr1_7_b' | 'qwen3_asr0_6_b';
 
 export interface Qwen3AsrModelInfo {
   id: Qwen3AsrModelId;
