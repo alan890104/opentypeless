@@ -78,7 +78,7 @@ export type CloudProvider =
   | 'samba_nova'
   | 'custom';
 
-export type PolishModel = 'phi4_mm' | 'ministral3b' | 'qwen3_4b';
+export type PolishModel = 'phi4_mini' | 'ministral3b' | 'qwen3_4b';
 
 export interface PolishModelInfo {
   id: PolishModel;
@@ -88,6 +88,7 @@ export interface PolishModelInfo {
   downloaded: boolean;
   file_size_on_disk: number;
   is_active: boolean;
+  recommended: boolean;
 }
 
 export type MatchType = 'app_name' | 'bundle_id' | 'url';

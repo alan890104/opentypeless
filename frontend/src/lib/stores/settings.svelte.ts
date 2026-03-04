@@ -24,7 +24,7 @@ let settings = $state<Settings>({
   auto_paste: true,
   polish: {
     enabled: false,
-    model: 'phi4_mm',
+    model: 'phi4_mini',
     custom_prompt: null,
     mode: 'local',
     cloud: { provider: 'groq', api_key: '', endpoint: '', model_id: 'qwen/qwen3-32b' },
