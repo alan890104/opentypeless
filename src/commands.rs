@@ -87,13 +87,17 @@ pub fn update_hotkey(
 
     if let Some(ref edit_hk) = settings.edit_hotkey {
         if let Some(edit_shortcut) = parse_hotkey_string(edit_hk) {
-            let _ = app.global_shortcut().register(edit_shortcut);
+            if let Err(e) = app.global_shortcut().register(edit_shortcut) {
+                tracing::warn!("Failed to re-register edit hotkey: {}", e);
+            }
         }
     }
 
     if let Some(ref meeting_hk) = settings.meeting_hotkey {
         if let Some(meeting_shortcut) = parse_hotkey_string(meeting_hk) {
-            let _ = app.global_shortcut().register(meeting_shortcut);
+            if let Err(e) = app.global_shortcut().register(meeting_shortcut) {
+                tracing::warn!("Failed to re-register meeting hotkey: {}", e);
+            }
         }
     }
 
@@ -153,7 +157,9 @@ pub fn update_edit_hotkey(
 
     if let Some(ref meeting_hk) = settings.meeting_hotkey {
         if let Some(shortcut) = parse_hotkey_string(meeting_hk) {
-            let _ = app.global_shortcut().register(shortcut);
+            if let Err(e) = app.global_shortcut().register(shortcut) {
+                tracing::warn!("Failed to re-register meeting hotkey: {}", e);
+            }
         }
     }
 
@@ -679,6 +685,12 @@ pub fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
+    // Refuse to stop if meeting mode is active — the meeting hotkey must be
+    // used to end a meeting session so the transcript is handled correctly.
+    if state.meeting_active.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("meeting_mode_active".to_string());
+    }
+
     let mut stt_config = state.settings.lock().map_err(|e| e.to_string())?.stt.clone();
     if stt_config.mode == SttMode::Cloud {
         let key = get_cached_api_key(&state.api_key_cache, stt_config.cloud.provider.as_key());

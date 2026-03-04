@@ -182,6 +182,25 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String) {
         }
     }
 
+    // Feed samples that arrived since the last tick (up to 2 s may be unread).
+    {
+        let trailing_raw: Vec<f32> = {
+            let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            buf[last_tail..].to_vec()
+        };
+        if !trailing_raw.is_empty() {
+            let trailing_16k = if sr != 16000 {
+                crate::audio::resample(&trailing_raw, sr, 16000)
+            } else {
+                trailing_raw
+            };
+            let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = guard.as_ref() {
+                let _ = c.engine.feed_audio(&mut sstate, &trailing_16k);
+            }
+        }
+    }
+
     // Flush remaining audio and store the final result.
     let final_text = {
         let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
@@ -241,6 +260,9 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
 
     let mut accumulated = String::new();
     let mut silence_count: u32 = 0;
+    // Only trigger a silence-reset after real speech has been received since
+    // the last reset, preventing repeated resets on empty/silent sessions.
+    let mut had_speech_since_reset = false;
     const RMS_THRESHOLD: f32 = 0.003;
 
     // Tracks how far into the shared buffer we have consumed.
@@ -274,8 +296,11 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
         };
 
         if delta_raw.is_empty() {
-            // No new audio arrived (should be rare); treat as silence.
-            silence_count += 1;
+            // No new audio arrived (should be rare); treat as silence only
+            // after real speech has been seen since the last session reset.
+            if had_speech_since_reset {
+                silence_count += 1;
+            }
         } else {
             // Resample to 16 kHz if needed.
             let delta_16k = if sr != 16000 {
@@ -289,9 +314,12 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
                 / delta_16k.len() as f32)
                 .sqrt();
             if rms < RMS_THRESHOLD {
-                silence_count += 1;
+                if had_speech_since_reset {
+                    silence_count += 1;
+                }
             } else {
                 silence_count = 0;
+                had_speech_since_reset = true;
             }
 
             // Feed audio to the streaming engine.
@@ -308,8 +336,9 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
             }
         }
 
-        // Reset session on prolonged silence (≥ 2 ticks = 4 s).
-        if silence_count >= 2 {
+        // Reset session on prolonged silence (≥ 2 ticks = 4 s), but only
+        // if real speech was received since the last reset.
+        if silence_count >= 2 && had_speech_since_reset {
             let mut should_abort = false;
             {
                 let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
@@ -339,8 +368,28 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
                 }
             }
             silence_count = 0;
+            had_speech_since_reset = false;
             if should_abort {
                 break;
+            }
+        }
+    }
+
+    // Feed samples that arrived since the last tick (up to 2 s may be unread).
+    {
+        let trailing_raw: Vec<f32> = {
+            let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            buf[last_tail..].to_vec()
+        };
+        if !trailing_raw.is_empty() {
+            let trailing_16k = if sr != 16000 {
+                crate::audio::resample(&trailing_raw, sr, 16000)
+            } else {
+                trailing_raw
+            };
+            let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = guard.as_ref() {
+                let _ = c.engine.feed_audio(&mut sstate, &trailing_16k);
             }
         }
     }

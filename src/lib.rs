@@ -1673,8 +1673,12 @@ fn start_meeting_mode(app: &AppHandle) {
 fn stop_meeting_mode(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    // Signal feeder to stop.
-    state.is_recording.store(false, Ordering::SeqCst);
+    // Atomically flip is_recording to false. If it was already false, another
+    // stop is already in progress — bail out to avoid double-processing the
+    // transcript and double-copying to clipboard.
+    if !state.is_recording.swap(false, Ordering::SeqCst) {
+        return;
+    }
 
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.emit("recording-status", "processing");

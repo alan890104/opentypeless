@@ -244,6 +244,13 @@
     parts.push(meetingCapturedCode);
     const newMeetingHotkey = parts.join('+');
 
+    // Require at least one modifier to avoid swallowing bare keypresses globally.
+    if (meetingCapturedModifiers.size === 0) {
+      console.warn('Meeting hotkey must include at least one modifier key');
+      cancelMeetingCapture();
+      return;
+    }
+
     // Must differ from primary and edit hotkeys
     if (newMeetingHotkey === getHotkey() || newMeetingHotkey === getEditHotkey()) {
       console.warn('Meeting hotkey must differ from primary and edit hotkeys');
