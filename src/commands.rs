@@ -186,6 +186,13 @@ pub fn update_meeting_hotkey(
         if !hk.is_empty() {
             let _ = parse_hotkey_string(hk)
                 .ok_or_else(|| "Invalid meeting hotkey string".to_string())?;
+            // Must not conflict with primary or edit hotkeys.
+            if *hk == settings.hotkey {
+                return Err("Meeting hotkey must differ from primary hotkey".to_string());
+            }
+            if settings.edit_hotkey.as_deref() == Some(hk.as_str()) {
+                return Err("Meeting hotkey must differ from edit hotkey".to_string());
+            }
         }
     }
     settings.meeting_hotkey = hotkey.filter(|s| !s.is_empty());
@@ -673,6 +680,9 @@ Do NOT include any explanation, only the JSON object."#
 
 #[tauri::command]
 pub fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
+    if state.meeting_active.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("meeting_mode_active".to_string());
+    }
     let device_name = state.settings.lock().ok().and_then(|s| s.mic_device.clone());
     audio::do_start_recording(
         &state.is_recording,

@@ -191,10 +191,13 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String) {
     }
 
     // Feed samples that arrived since the last tick (up to 2 s may be unread).
+    // IMPORTANT: do_stop_recording drains the buffer with std::mem::take *before*
+    // entering the feeder wait, so buf.len() may be 0 by the time we reach here.
+    // Clamping last_tail prevents an out-of-bounds panic.
     {
         let trailing_raw: Vec<f32> = {
             let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            buf[last_tail..].to_vec()
+            buf[last_tail.min(buf.len())..].to_vec()
         };
         if !trailing_raw.is_empty() {
             let trailing_16k = if sr != 16000 {
@@ -387,7 +390,7 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
     {
         let trailing_raw: Vec<f32> = {
             let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            buf[last_tail..].to_vec()
+            buf[last_tail.min(buf.len())..].to_vec()
         };
         if !trailing_raw.is_empty() {
             let trailing_16k = if sr != 16000 {
@@ -400,6 +403,13 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
                 let _ = c.engine.feed_audio(&mut sstate, &trailing_16k);
             }
         }
+    }
+
+    // If stop_meeting_mode timed out and cancelled us, discard results so this
+    // zombie thread cannot overwrite a subsequent meeting session's transcript.
+    if state.meeting_cancelled.load(Ordering::SeqCst) {
+        tracing::warn!("[meeting] Feeder was cancelled (timeout) — discarding result");
+        return;
     }
 
     // Flush remaining audio from the last segment.

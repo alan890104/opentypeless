@@ -68,6 +68,7 @@ pub struct AppState {
     pub streaming_cancelled: AtomicBool,
     pub streaming_result: Mutex<Option<String>>,
     pub meeting_active: AtomicBool,
+    pub meeting_cancelled: AtomicBool,
     pub meeting_transcript: Mutex<String>,
     pub meeting_start_time: Mutex<Option<std::time::Instant>>,
 }
@@ -781,6 +782,7 @@ pub fn run() {
                 streaming_cancelled: AtomicBool::new(false),
                 streaming_result: Mutex::new(None),
                 meeting_active: AtomicBool::new(false),
+                meeting_cancelled: AtomicBool::new(false),
                 meeting_transcript: Mutex::new(String::new()),
                 meeting_start_time: Mutex::new(None),
             });
@@ -1535,6 +1537,13 @@ fn start_meeting_mode(app: &AppHandle) {
         return;
     }
 
+    // Guard: if a normal recording is already in progress, refuse to start meeting mode
+    // to avoid two feeders sharing the same buffer and is_recording flag.
+    if state.is_recording.load(Ordering::SeqCst) {
+        tracing::warn!("Meeting mode: a normal recording is already in progress, ignoring");
+        return;
+    }
+
     let preferred_device = state.settings.lock().ok().and_then(|s| s.mic_device.clone());
     if let Err(e) = audio::do_start_recording(
         &state.is_recording,
@@ -1549,7 +1558,10 @@ fn start_meeting_mode(app: &AppHandle) {
         return;
     }
 
+    // Set meeting_active immediately after is_recording=true so the primary
+    // hotkey handler sees meeting_active=true and does not try to stop the session.
     state.meeting_active.store(true, Ordering::SeqCst);
+    state.meeting_cancelled.store(false, Ordering::SeqCst);
     if let Ok(mut t) = state.meeting_transcript.lock() {
         t.clear();
     }
@@ -1695,6 +1707,9 @@ fn stop_meeting_mode(app: &AppHandle) {
     while state.meeting_active.load(Ordering::SeqCst) {
         if std::time::Instant::now() >= deadline {
             tracing::warn!("Meeting feeder timeout — using partial transcript");
+            // Signal the feeder to discard its final result so the zombie
+            // thread cannot overwrite a subsequent session's transcript.
+            state.meeting_cancelled.store(true, Ordering::SeqCst);
             // Mark inactive immediately so the hotkey is not locked out.
             state.meeting_active.store(false, Ordering::SeqCst);
             break;
