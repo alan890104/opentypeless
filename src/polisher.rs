@@ -266,7 +266,8 @@ pub fn recommend_polish_model(language: Option<&str>) -> PolishModel {
         "zh" => PolishModel::Qwen3_4B,
         "de" | "fr" | "es" | "it" | "pt" | "nl" | "pl" | "ru" | "uk" | "cs" | "sk"
         | "hr" | "sl" | "sr" | "bg" | "ro" | "el" | "sv" | "da" | "no" | "fi" | "is"
-        | "ca" | "gl" | "af" | "cy" | "be" | "mk" | "bs" | "lb" => PolishModel::Ministral3B,
+        | "ca" | "gl" | "af" | "cy" | "be" | "mk" | "bs" | "lb"
+        | "hu" | "et" | "lv" | "lt" | "mt" | "ga" => PolishModel::Ministral3B,
         _ => PolishModel::Phi4Mm,
     }
 }
@@ -282,10 +283,11 @@ pub struct PolishModelInfo {
     pub downloaded: bool,
     pub file_size_on_disk: u64,
     pub is_active: bool,
+    pub recommended: bool,
 }
 
 impl PolishModelInfo {
-    pub fn from_model(model: &PolishModel, active_model: &PolishModel) -> Self {
+    pub fn from_model(model: &PolishModel, active_model: &PolishModel, recommended_model: &PolishModel) -> Self {
         let dir = crate::settings::models_dir();
         let (downloaded, file_size_on_disk) = model_file_status(&dir, model);
         Self {
@@ -296,6 +298,7 @@ impl PolishModelInfo {
             downloaded,
             file_size_on_disk,
             is_active: model == active_model,
+            recommended: model == recommended_model,
         }
     }
 }
@@ -1389,17 +1392,36 @@ pub fn validate_gguf_file(path: &std::path::Path, expected_model: &PolishModel) 
 pub fn is_polish_ready(model_dir: &std::path::Path, config: &PolishConfig) -> bool {
     match config.mode {
         PolishMode::Cloud => !config.cloud.api_key.is_empty(),
-        PolishMode::Local => model_dir.join(config.model.filename()).exists(),
+        PolishMode::Local => {
+            if !model_dir.join(config.model.filename()).exists() {
+                return false;
+            }
+            if let Some(tok) = config.model.tokenizer_filename() {
+                if !model_dir.join(tok).exists() {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
 /// Check existence and size in a single metadata call.
+/// Returns `(downloaded, file_size_on_disk)`.  `downloaded` is false if the
+/// GGUF is missing OR if the model requires a separate tokenizer that is not
+/// yet present on disk.
 pub fn model_file_status(model_dir: &std::path::Path, model: &PolishModel) -> (bool, u64) {
     let path = model_dir.join(model.filename());
-    match std::fs::metadata(&path) {
-        Ok(m) => (true, m.len()),
-        Err(_) => (false, 0),
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return (false, 0);
     }
+    if let Some(tok) = model.tokenizer_filename() {
+        if !model_dir.join(tok).exists() {
+            return (false, size);
+        }
+    }
+    (true, size)
 }
 
 /// Invalidate the cached LLM model so it gets reloaded on next use.

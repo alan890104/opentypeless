@@ -46,7 +46,20 @@ pub fn warm_qwen3_asr(
     tracing::info!("Loading Qwen3-ASR {}...", model.display_name());
     let t0 = std::time::Instant::now();
 
-    let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+    let device = if cfg!(feature = "metal") {
+        Device::new_metal(0).unwrap_or_else(|e| {
+            tracing::warn!("Metal unavailable, falling back to CPU (Qwen3-ASR will be slow): {}", e);
+            Device::Cpu
+        })
+    } else if candle_core::utils::cuda_is_available() {
+        Device::new_cuda(0).unwrap_or_else(|e| {
+            tracing::warn!("CUDA unavailable, falling back to CPU (Qwen3-ASR will be slow): {}", e);
+            Device::Cpu
+        })
+    } else {
+        tracing::warn!("No GPU acceleration available, Qwen3-ASR will run on CPU");
+        Device::Cpu
+    };
     let engine = qwen3_asr::inference::AsrInference::load(&model_dir, device)
         .map_err(|e| format!("Qwen3-ASR load failed: {}", e))?;
 
