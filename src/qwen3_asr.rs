@@ -106,11 +106,9 @@ pub fn invalidate_qwen3_asr_cache(cache: &Mutex<Option<Qwen3AsrCache>>) {
 /// to flush remaining audio, stores the final text in `AppState.streaming_result`,
 /// and clears `AppState.streaming_active`.
 ///
-/// # Safety
-/// `StreamingState` contains candle `Tensor` objects and is NOT `Send`. It is
-/// created and used entirely within this function (i.e. within the feeder
-/// thread), so no cross-thread transfer occurs.
-pub(crate) fn run_feeder_loop(app: AppHandle, language: String) {
+/// `sstate` is created and used entirely within this function (i.e. within the
+/// feeder thread); it is never transferred to another thread.
+pub(crate) fn run_feeder_loop(app: AppHandle, language: String, session_id: u64) {
     let state = app.state::<crate::AppState>();
 
     // Read the native sample rate once (won't change during recording).
@@ -189,6 +187,15 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String) {
     // engine work so the batch fallback can acquire qwen3_asr_ctx without contention.
     if state.streaming_cancelled.load(Ordering::SeqCst) {
         tracing::info!("[streaming] cancelled — skipping trailing feed, batch fallback will handle it");
+        state.streaming_active.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    // Session guard: if streaming_session has advanced past our ID, a new
+    // recording already started and this is a zombie feeder. Discard the result
+    // so we don't overwrite the new session's (possibly already stored) result.
+    if state.streaming_session.load(Ordering::SeqCst) != session_id {
+        tracing::warn!("[streaming] stale feeder (session {} vs current {}) — discarding result", session_id, state.streaming_session.load(Ordering::SeqCst));
         state.streaming_active.store(false, Ordering::SeqCst);
         return;
     }
@@ -367,14 +374,24 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, s
                     .map(|r| r.text)
                     .unwrap_or_default();
                 if !seg_text.is_empty() {
+                    // Insert a space before seg_text if accumulated already has
+                    // content and neither side provides whitespace — prevents
+                    // segment fusion when the model omits trailing spaces on
+                    // partial results and does not include a leading space in the
+                    // final flush tokens.
+                    if !accumulated.is_empty()
+                        && !accumulated.ends_with(' ')
+                        && !seg_text.starts_with(' ')
+                    {
+                        accumulated.push(' ');
+                    }
                     accumulated.push_str(&seg_text);
                     emit_meeting_partial(&app, &accumulated);
                 }
 
-                // Re-initialise a fresh session for the next speech segment.
-                // Add a space separator so adjacent segments are not fused into
-                // one word when the model omits trailing whitespace.
-                if !accumulated.is_empty() {
+                // Add a trailing space so the NEXT segment does not fuse with
+                // this one even if its first partial token lacks a leading space.
+                if !accumulated.is_empty() && !accumulated.ends_with(' ') {
                     accumulated.push(' ');
                 }
                 match guard.as_ref() {

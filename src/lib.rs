@@ -75,6 +75,13 @@ pub struct AppState {
     pub feeder_stop_mu: Mutex<()>,
     pub meeting_active: AtomicBool,
     pub meeting_cancelled: AtomicBool,
+    /// Guards `stop_meeting_mode` against re-entrant/concurrent invocations.
+    /// Set to `true` at entry, cleared to `false` on exit. Using a dedicated
+    /// flag (instead of `is_recording.swap`) ensures we handle the case where
+    /// `is_recording` was already set to `false` by the dead-stream guard before
+    /// `stop_meeting_mode` is called — without this, the transcript would never
+    /// be delivered.
+    pub meeting_stopping: AtomicBool,
     /// Monotonically increasing session counter. Incremented each time a new
     /// meeting session starts. The feeder thread captures this value at launch
     /// and aborts post-loop work if the counter has advanced, preventing a
@@ -83,6 +90,10 @@ pub struct AppState {
     pub meeting_session: AtomicU64,
     pub meeting_transcript: Mutex<String>,
     pub meeting_start_time: Mutex<Option<std::time::Instant>>,
+    /// Monotonically increasing session counter for the normal (non-meeting)
+    /// Qwen3-ASR streaming feeder. Prevents a zombie feeder from a previous
+    /// session from overwriting `streaming_result` for a later recording.
+    pub streaming_session: AtomicU64,
 }
 
 /// Restore original clipboard content from saved_clipboard.
@@ -807,9 +818,11 @@ pub fn run() {
                 feeder_stop_mu: Mutex::new(()),
                 meeting_active: AtomicBool::new(false),
                 meeting_cancelled: AtomicBool::new(false),
+                meeting_stopping: AtomicBool::new(false),
                 meeting_session: AtomicU64::new(0),
                 meeting_transcript: Mutex::new(String::new()),
                 meeting_start_time: Mutex::new(None),
+                streaming_session: AtomicU64::new(0),
             });
 
             // Register a CoreAudio listener for default-input-device changes.
@@ -1321,6 +1334,9 @@ pub fn run() {
                                         if let Some((feeder_model, feeder_lang)) = stream_config {
                                             state.streaming_active.store(true, Ordering::SeqCst);
                                             state.streaming_cancelled.store(false, Ordering::SeqCst);
+                                            // Advance session counter so any zombie feeder from a
+                                            // prior recording cannot overwrite this session's result.
+                                            let feeder_session_id = state.streaming_session.fetch_add(1, Ordering::SeqCst) + 1;
                                             if let Ok(mut r) = state.streaming_result.lock() {
                                                 *r = None;
                                             }
@@ -1344,7 +1360,7 @@ pub fn run() {
                                                     fstate.streaming_active.store(false, Ordering::SeqCst);
                                                     return;
                                                 }
-                                                qwen3_asr::run_feeder_loop(feeder_app, feeder_lang);
+                                                qwen3_asr::run_feeder_loop(feeder_app, feeder_lang, feeder_session_id);
                                             });
                                         }
 
@@ -1495,6 +1511,14 @@ fn start_meeting_mode(app: &AppHandle) {
         return;
     }
 
+    // Mark meeting_active BEFORE starting recording so the hotkey handler cannot
+    // race: if is_recording becomes true before meeting_active is set, a concurrent
+    // hotkey press would see is_recording=true, meeting_active=false and behave
+    // incorrectly. Reset all flags to a clean state first.
+    state.meeting_active.store(true, Ordering::SeqCst);
+    state.meeting_cancelled.store(false, Ordering::SeqCst);
+    state.meeting_stopping.store(false, Ordering::SeqCst);
+
     let preferred_device = state.settings.lock().ok().and_then(|s| s.mic_device.clone());
     if let Err(e) = audio::do_start_recording(
         &state.is_recording,
@@ -1506,13 +1530,9 @@ fn start_meeting_mode(app: &AppHandle) {
         preferred_device,
     ) {
         tracing::error!("Meeting mode start failed: {}", e);
+        state.meeting_active.store(false, Ordering::SeqCst);
         return;
     }
-
-    // Set meeting_active immediately after is_recording=true so the primary
-    // hotkey handler sees meeting_active=true and does not try to stop the session.
-    state.meeting_active.store(true, Ordering::SeqCst);
-    state.meeting_cancelled.store(false, Ordering::SeqCst);
     // Advance the session generation counter. The feeder captures this value
     // and aborts post-loop work if the counter has advanced past it, preventing
     // a zombie feeder from a timed-out previous session from corrupting state.
@@ -1604,12 +1624,20 @@ fn start_meeting_mode(app: &AppHandle) {
 fn stop_meeting_mode(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    // Atomically flip is_recording to false. If it was already false, another
-    // stop is already in progress — bail out to avoid double-processing the
-    // transcript and double-copying to clipboard.
-    if !state.is_recording.swap(false, Ordering::SeqCst) {
-        return;
+    // Use meeting_stopping as the idempotency gate. is_recording may already be
+    // false if the cpal dead-stream guard fired before this function ran — using
+    // is_recording.swap would silently return without delivering the transcript.
+    if state
+        .meeting_stopping
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return; // Another stop_meeting_mode call is already in progress.
     }
+
+    // Ensure the feeder sees is_recording=false (it may already be false if
+    // triggered by dead-stream, which is fine — the store is idempotent).
+    state.is_recording.store(false, Ordering::SeqCst);
     // Wake the meeting feeder immediately so it exits its 2 s sleep and starts
     // post-loop work (trailing feed + finish_streaming) right away.
     state.feeder_stop_cv.notify_all();
@@ -1637,7 +1665,8 @@ fn stop_meeting_mode(app: &AppHandle) {
     let transcript = state
         .meeting_transcript
         .lock()
-        .map(|t| t.clone())
+        .ok()
+        .map(|g| g.clone())
         .unwrap_or_default();
 
     let duration_secs = state
@@ -1654,6 +1683,7 @@ fn stop_meeting_mode(app: &AppHandle) {
             let _ = overlay.emit("recording-status", "error");
         }
         hide_overlay_delayed(app, 1500);
+        state.meeting_stopping.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -1711,6 +1741,9 @@ fn stop_meeting_mode(app: &AppHandle) {
     hide_overlay_delayed(app, 2000);
     // meeting_active is already false: either the feeder set it to false when
     // it finished normally, or stop_meeting_mode set it to false on timeout.
+
+    // Allow future stop_meeting_mode calls (e.g. for the next meeting session).
+    state.meeting_stopping.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------
@@ -1804,7 +1837,11 @@ fn spawn_audio_level_monitor(app: AppHandle, mode: AudioMonitorMode) {
                             tracing::warn!(
                                 "No audio data after 1.5s in meeting mode — stream dead, stopping meeting"
                             );
-                            stop_meeting_mode(&app);
+                            // Spawn a new thread: stop_meeting_mode blocks for up
+                            // to 8s waiting for the feeder, which would stall this
+                            // 50ms monitor loop for the entire duration.
+                            let app_clone = app.clone();
+                            std::thread::spawn(move || stop_meeting_mode(&app_clone));
                         }
                     }
                     return;

@@ -193,12 +193,17 @@ pub fn update_meeting_hotkey(
     state: State<'_, AppState>,
     hotkey: Option<String>,
 ) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|e| format!("Failed to unregister shortcuts: {}", e))?;
+    // Refuse if a meeting is in progress — unregistering the active hotkey
+    // would make it impossible to stop the meeting via keyboard.
+    if state.meeting_active.load(Ordering::SeqCst) {
+        return Err("Cannot change meeting hotkey while a meeting is in progress".to_string());
+    }
 
+    // Validate before making any changes so a bad hotkey string does not leave
+    // the app with no shortcuts registered (unregister_all already called).
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
 
     if let Some(ref hk) = hotkey {
@@ -222,6 +227,11 @@ pub fn update_meeting_hotkey(
         }
     }
     settings.meeting_hotkey = hotkey.filter(|s| !s.is_empty());
+
+    // Unregister only after validation succeeds.
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| format!("Failed to unregister shortcuts: {}", e))?;
 
     // Re-register primary hotkey.
     let primary = parse_hotkey_string(&settings.hotkey)
