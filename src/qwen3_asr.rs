@@ -243,6 +243,13 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
     let mut silence_count: u32 = 0;
     const RMS_THRESHOLD: f32 = 0.003;
 
+    // Tracks how far into the shared buffer we have consumed.
+    // We do a partial front-trim every tick to prevent the 10M sample safety cap
+    // while keeping the last ~2 s of audio visible to the waveform monitor thread.
+    let mut last_tail: usize = 0;
+    // Keep 2 s of native-rate samples for the waveform level monitor.
+    let waveform_keep: usize = sr as usize * 2;
+
     loop {
         std::thread::sleep(Duration::from_millis(2000));
 
@@ -250,14 +257,25 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
             break;
         }
 
-        // Drain the entire buffer to prevent the 10M sample safety cap.
+        // Read new audio since last tick, then trim the front of the buffer so it
+        // never exceeds waveform_keep + (one tick of audio) ≈ 4 s at 44.1 kHz.
+        // This prevents the 10M-sample safety cap without starving the waveform
+        // monitor (which always sees the most-recent waveform_keep samples).
         let delta_raw: Vec<f32> = {
             let mut buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *buf)
+            let delta = buf[last_tail..].to_vec();
+            last_tail = buf.len();
+            if last_tail > waveform_keep {
+                let trim = last_tail - waveform_keep;
+                buf.drain(..trim);
+                last_tail -= trim; // = waveform_keep
+            }
+            delta
         };
+
         if delta_raw.is_empty() {
+            // No new audio arrived (should be rare); treat as silence.
             silence_count += 1;
-            // Still check for reset even on empty buffer
         } else {
             // Resample to 16 kHz if needed.
             let delta_16k = if sr != 16000 {
@@ -266,7 +284,7 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
                 delta_raw
             };
 
-            // RMS-based silence detection.
+            // RMS-based silence detection over the new chunk.
             let rms = (delta_16k.iter().map(|&s| s * s).sum::<f32>()
                 / delta_16k.len() as f32)
                 .sqrt();
@@ -292,35 +310,38 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String) {
 
         // Reset session on prolonged silence (≥ 2 ticks = 4 s).
         if silence_count >= 2 {
-            let final_seg = {
+            let mut should_abort = false;
+            {
                 let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
-                let text = guard
+
+                // Flush remaining tokens from the current segment.
+                let seg_text = guard
                     .as_ref()
                     .and_then(|c| c.engine.finish_streaming(&mut sstate).ok())
                     .map(|r| r.text)
                     .unwrap_or_default();
-                if !text.is_empty() {
-                    accumulated.push_str(&text);
+                if !seg_text.is_empty() {
+                    accumulated.push_str(&seg_text);
+                    emit_meeting_partial(&app, &accumulated);
                 }
-                // Re-initialise session for the next speech segment.
-                sstate = guard
-                    .as_ref()
-                    .map(|c| c.engine.init_streaming(make_opts()))
-                    .unwrap_or_else(|| {
-                        // Engine was dropped while we held the lock — this should not happen.
-                        tracing::error!("Qwen3-ASR engine gone during silence reset");
-                        // Return a dummy state; the next iteration will break anyway.
-                        // SAFETY: init_streaming is the only constructor; if the engine is
-                        // gone the next loop iteration will exit via is_recording==false.
-                        unreachable!("engine cannot be None here")
-                    });
-                text
-            };
-            if !final_seg.is_empty() {
-                emit_meeting_partial(&app, &accumulated);
+
+                // Re-initialise a fresh session for the next speech segment.
+                match guard.as_ref() {
+                    Some(c) => {
+                        sstate = c.engine.init_streaming(make_opts());
+                        tracing::debug!("[meeting] Silence reset — new streaming session started");
+                    }
+                    None => {
+                        // Engine was unloaded (e.g. model download started) — abort gracefully.
+                        tracing::error!("[meeting] Engine unavailable during silence reset — aborting");
+                        should_abort = true;
+                    }
+                }
             }
             silence_count = 0;
-            tracing::debug!("[meeting] Silence reset — new streaming session started");
+            if should_abort {
+                break;
+            }
         }
     }
 

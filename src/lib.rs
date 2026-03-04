@@ -1485,6 +1485,17 @@ fn show_settings_window(app: &AppHandle) {
 fn start_meeting_mode(app: &AppHandle) {
     let state = app.state::<AppState>();
 
+    // Capture frontmost app context before recording starts (same as normal recording).
+    let captured_ctx = state
+        .context_override
+        .lock()
+        .ok()
+        .and_then(|ctx| ctx.clone())
+        .unwrap_or_else(context_detect::detect_frontmost_app);
+    if let Ok(mut ctx) = state.captured_context.lock() {
+        *ctx = Some(captured_ctx);
+    }
+
     // Only Qwen3-ASR local mode is supported.
     let (stt_mode, local_engine, qwen3_model, lang) = state
         .settings
@@ -1614,9 +1625,17 @@ fn start_meeting_mode(app: &AppHandle) {
     }
 
     // Spawn meeting feeder after engine is warm (max 8 s wait).
+    // Also trigger warm proactively so the engine starts loading in parallel.
     let feeder_app = app.clone();
     std::thread::spawn(move || {
         let fstate = feeder_app.state::<AppState>();
+
+        // Proactively trigger model warm-up (no-op if already loaded).
+        if let Err(e) = qwen3_asr::warm_qwen3_asr(&fstate.qwen3_asr_ctx, &qwen3_model) {
+            tracing::warn!("Meeting mode: engine warm failed: {}", e);
+        }
+
+        // Wait for engine to be ready (up to 8 s total, warm already started above).
         let mut waited = 0u64;
         while waited < 8000 {
             let ready = fstate
@@ -1641,6 +1660,10 @@ fn start_meeting_mode(app: &AppHandle) {
             tracing::warn!("Meeting mode: engine not ready after 8s, aborting");
             fstate.meeting_active.store(false, Ordering::SeqCst);
             fstate.is_recording.store(false, Ordering::SeqCst);
+            if let Some(ov) = feeder_app.get_webview_window("overlay") {
+                let _ = ov.emit("recording-status", "error");
+            }
+            hide_overlay_delayed(&feeder_app, 2000);
             return;
         }
         qwen3_asr::run_meeting_feeder_loop(feeder_app, lang);
@@ -1663,6 +1686,8 @@ fn stop_meeting_mode(app: &AppHandle) {
     while state.meeting_active.load(Ordering::SeqCst) {
         if std::time::Instant::now() >= deadline {
             tracing::warn!("Meeting feeder timeout — using partial transcript");
+            // Mark inactive immediately so the hotkey is not locked out.
+            state.meeting_active.store(false, Ordering::SeqCst);
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1727,7 +1752,7 @@ fn stop_meeting_mode(app: &AppHandle) {
             polish_model: "None".to_string(),
             duration_secs,
             has_audio: false,
-            stt_elapsed_ms: (duration_secs * 1000.0) as u64,
+            stt_elapsed_ms: 0, // streaming mode — no single STT duration
             polish_elapsed_ms: None,
             total_elapsed_ms: (duration_secs * 1000.0) as u64,
             app_name: ctx.app_name.clone(),
