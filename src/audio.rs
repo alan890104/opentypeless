@@ -102,7 +102,7 @@ pub fn spawn_audio_thread(
                     match host.default_input_device() {
                         Some(d) => d,
                         None => {
-                            let _ = init_tx.send(Err("找不到麥克風裝置".to_string()));
+                            let _ = init_tx.send(Err("No microphone device found".to_string()));
                             return;
                         }
                     }
@@ -112,7 +112,7 @@ pub fn spawn_audio_thread(
             match host.default_input_device() {
                 Some(d) => d,
                 None => {
-                    let _ = init_tx.send(Err("找不到麥克風裝置".to_string()));
+                    let _ = init_tx.send(Err("No microphone device found".to_string()));
                     return;
                 }
             }
@@ -121,7 +121,7 @@ pub fn spawn_audio_thread(
         let config = match device.default_input_config() {
             Ok(c) => c,
             Err(e) => {
-                let _ = init_tx.send(Err(format!("無法取得輸入設定: {}", e)));
+                let _ = init_tx.send(Err(format!("Failed to get input config: {}", e)));
                 return;
             }
         };
@@ -210,7 +210,7 @@ pub fn spawn_audio_thread(
                     )
                 }
                 other => {
-                    let _ = init_tx.send(Err(format!("不支援的音訊格式: {:?}", other)));
+                    let _ = init_tx.send(Err(format!("Unsupported audio format: {:?}", other)));
                     return;
                 }
             }
@@ -219,13 +219,13 @@ pub fn spawn_audio_thread(
         let stream = match stream {
             Ok(s) => s,
             Err(e) => {
-                let _ = init_tx.send(Err(format!("無法建立錄音串流: {}", e)));
+                let _ = init_tx.send(Err(format!("Failed to build input stream: {}", e)));
                 return;
             }
         };
 
         if let Err(e) = stream.play() {
-            let _ = init_tx.send(Err(format!("無法啟動錄音串流: {}", e)));
+            let _ = init_tx.send(Err(format!("Failed to start audio stream: {}", e)));
             return;
         }
 
@@ -250,7 +250,7 @@ pub fn spawn_audio_thread(
 
     let sample_rate = init_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| "音訊執行緒初始化逾時".to_string())??;
+        .map_err(|_| "Audio thread init timed out".to_string())??;
 
     Ok((sample_rate, AudioThreadControl { thread, stop_signal: stop, stream_alive, device_name: resolved_device_name }))
 }
@@ -330,7 +330,7 @@ pub fn do_start_recording(
 
     // ── Step 3: flip the recording flag ──────────────────────────────────
     if is_recording.load(Ordering::SeqCst) {
-        return Err("已在錄音中".to_string());
+        return Err("Already recording".to_string());
     }
 
     {
@@ -371,7 +371,7 @@ pub fn do_stop_recording(
         .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return Err("目前未在錄音".to_string());
+        return Err("Not currently recording".to_string());
     }
     // Wake the streaming feeder immediately so it exits its 2 s sleep and
     // starts post-loop work (trailing feed + finish_streaming) right away,
@@ -384,7 +384,7 @@ pub fn do_stop_recording(
     };
 
     if samples.is_empty() {
-        return Err("沒有錄到任何聲音".to_string());
+        return Err("No audio captured".to_string());
     }
 
     tracing::info!(
