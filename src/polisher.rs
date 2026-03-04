@@ -174,7 +174,7 @@ impl PolishModel {
             PolishModel::Phi4Mm => "Phi-4-mini-instruct-Q4_K_M.gguf",
             PolishModel::Ministral3B => "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
             PolishModel::Qwen3_4B => "Qwen3-4B-Q4_K_M.gguf",
-            PolishModel::Unknown => "phi4-mm-Q4_K_M.gguf",
+            PolishModel::Unknown => "Phi-4-mini-instruct-Q4_K_M.gguf",
         }
     }
 
@@ -190,7 +190,7 @@ impl PolishModel {
                 "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
             }
             PolishModel::Unknown => {
-                "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+                "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf"
             }
         }
     }
