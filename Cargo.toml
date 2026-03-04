@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 
 [features]
 default = ["metal"]
-metal = ["whisper-rs/metal", "candle-core/metal", "candle-transformers/metal", "qwen3-asr/metal"]
+metal = ["whisper-rs/metal", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "qwen3-asr/metal"]
 cuda = ["whisper-rs/cuda", "candle-core/cuda", "candle-transformers/cuda"]
 
 [dependencies]
@@ -25,6 +25,7 @@ cpal = "0.15"
 whisper-rs = "0.15"
 reqwest = { version = "0.12", features = ["blocking", "multipart"] }
 candle-core = { git = "https://github.com/huggingface/candle.git", rev = "38e7202145a8d264cf78e824edf2c31f6a438cdf" }
+candle-nn = { git = "https://github.com/huggingface/candle.git", rev = "38e7202145a8d264cf78e824edf2c31f6a438cdf" }
 candle-transformers = { git = "https://github.com/huggingface/candle.git", rev = "38e7202145a8d264cf78e824edf2c31f6a438cdf" }
 qwen3-asr = { git = "https://github.com/alan890104/qwen3-asr-rs.git", rev = "b505643", default-features = false }
 tokenizers = { version = "0.22", features = ["onig"] }

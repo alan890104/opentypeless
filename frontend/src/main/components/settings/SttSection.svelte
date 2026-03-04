@@ -119,11 +119,6 @@
     { value: 'cloud', label: t('settings.stt.modeCloud') },
   ]);
 
-  const localEngineOptions = [
-    { value: 'whisper', label: 'Whisper' },
-    { value: 'qwen3_asr', label: 'Qwen3-ASR' },
-  ];
-
   let sttConfig = $derived(getSttConfig());
 
   // ── Whisper model loading ──
@@ -142,15 +137,23 @@
   }
 
   async function onSelectModel(modelId: WhisperModelId) {
-    if (modelId === sttConfig.whisper_model) return;
     const prevModelId = sttConfig.whisper_model;
+    const prevEngine = sttConfig.local_engine ?? 'whisper';
+    const engineChanged = prevEngine !== 'whisper';
+    if (modelId === prevModelId && !engineChanged) return;
     setSttWhisperModel(modelId);
+    setSttLocalEngine('whisper');
+    await saveStt();
     whisperSwitching = true;
     try {
       await switchWhisperModel(modelId);
     } catch (e) {
       console.error('Failed to switch whisper model:', e);
-      if (!destroyed) setSttWhisperModel(prevModelId); // revert optimistic update on failure
+      if (!destroyed) {
+        setSttWhisperModel(prevModelId);
+        setSttLocalEngine(prevEngine as LocalSttEngine);
+        await saveStt();
+      }
     }
     if (destroyed) return;
     whisperSwitching = false;
@@ -204,15 +207,23 @@
   }
 
   async function onSelectQwen3Model(modelId: Qwen3AsrModelId) {
-    if (modelId === sttConfig.qwen3_asr_model) return;
     const prevModelId = sttConfig.qwen3_asr_model;
+    const prevEngine = sttConfig.local_engine ?? 'whisper';
+    const engineChanged = prevEngine !== 'qwen3_asr';
+    if (modelId === prevModelId && !engineChanged) return;
     setSttQwen3AsrModel(modelId);
+    setSttLocalEngine('qwen3_asr');
+    await saveStt();
     qwen3Switching = true;
     try {
       await switchQwen3AsrModel(modelId);
     } catch (e) {
       console.error('Failed to switch Qwen3-ASR model:', e);
-      if (!destroyed) setSttQwen3AsrModel(prevModelId ?? 'qwen3_asr1_7_b'); // revert optimistic update on failure
+      if (!destroyed) {
+        setSttQwen3AsrModel(prevModelId ?? 'qwen3_asr1_7_b');
+        setSttLocalEngine(prevEngine as LocalSttEngine);
+        await saveStt();
+      }
     }
     if (destroyed) return;
     qwen3Switching = false;
@@ -253,13 +264,6 @@
       downloadErrorModelId = modelId;
       console.error('Failed to start Qwen3-ASR download:', e);
     }
-  }
-
-  // ── Engine sub-selector ──
-
-  function onEngineChange(value: string) {
-    setSttLocalEngine(value as LocalSttEngine);
-    saveStt();
   }
 
   // ── Mode change ──
@@ -374,21 +378,13 @@
         {/if}
       </SettingRow>
 
-      <!-- Engine sub-selector -->
-      <SettingRow name={t('settings.stt.localEngine')} desc={(sttConfig.local_engine ?? 'whisper') === 'whisper' ? t('settings.stt.localEngineDescWhisper') : t('settings.stt.localEngineDescQwen3Asr')}>
-        <SegmentedControl
-          options={localEngineOptions}
-          value={sttConfig.local_engine ?? 'whisper'}
-          onchange={onEngineChange}
-        />
-      </SettingRow>
-
-      <!-- Whisper model list -->
-      {#if (sttConfig.local_engine ?? 'whisper') === 'whisper'}
-        <div class="model-list-label">{t('settings.stt.localModel')}</div>
-        <div class="model-list" class:switching={whisperSwitching}>
+      <!-- Unified local model list -->
+      <div class="model-list">
+        <!-- Whisper section -->
+        <div class="model-section-header">Whisper</div>
+        <div class="model-section-group" class:switching={whisperSwitching}>
           {#each models as model (model.id)}
-            {@const isActive = model.id === sttConfig.whisper_model}
+            {@const isActive = (sttConfig.local_engine ?? 'whisper') === 'whisper' && model.id === sttConfig.whisper_model}
             {@const isDownloading = downloadingModelId === model.id}
             {@const isRecommended = model.id === recommendedModel}
             {@const isSwitchingThis = whisperSwitching && isActive}
@@ -439,9 +435,7 @@
                   <button
                     class="model-download-btn"
                     onclick={(e) => { e.stopPropagation(); startWhisperDownload(model.id); }}
-                  >
-                    {t('settings.stt.download')}
-                  </button>
+                  >{t('settings.stt.download')}</button>
                 {/if}
               </div>
             </div>
@@ -458,14 +452,12 @@
             {/if}
           {/each}
         </div>
-      {/if}
 
-      <!-- Qwen3-ASR model list -->
-      {#if (sttConfig.local_engine ?? 'whisper') === 'qwen3_asr'}
-        <div class="model-list-label">{t('settings.stt.localModel')}</div>
-        <div class="model-list" class:switching={qwen3Switching}>
+        <!-- Qwen3-ASR section -->
+        <div class="model-section-header">Qwen3-ASR</div>
+        <div class="model-section-group" class:switching={qwen3Switching}>
           {#each qwen3Models as model (model.id)}
-            {@const isActive = model.id === (sttConfig.qwen3_asr_model ?? 'qwen3_asr1_7_b')}
+            {@const isActive = (sttConfig.local_engine ?? 'whisper') === 'qwen3_asr' && model.id === (sttConfig.qwen3_asr_model ?? 'qwen3_asr1_7_b')}
             {@const isThisDownloading = model.id === downloadingModelId}
             {@const isSwitchingThis = qwen3Switching && isActive}
             {@const isError = model.id === downloadErrorModelId}
@@ -512,9 +504,7 @@
                   <button
                     class="model-download-btn"
                     onclick={(e) => { e.stopPropagation(); startQwen3Download(model.id); }}
-                  >
-                    {t('settings.stt.download')}
-                  </button>
+                  >{t('settings.stt.download')}</button>
                 {/if}
               </div>
             </div>
@@ -531,7 +521,7 @@
             {/if}
           {/each}
         </div>
-      {/if}
+      </div>
     </div>
   {/if}
 
@@ -573,18 +563,30 @@
     margin-top: 12px;
   }
 
-  .model-list-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
   .model-list {
     display: flex;
     flex-direction: column;
+    gap: 0;
+  }
+
+  .model-section-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 10px 2px 4px;
+  }
+
+  .model-section-header:first-child {
+    padding-top: 2px;
+  }
+
+  .model-section-group {
+    display: flex;
+    flex-direction: column;
     gap: 2px;
+    margin-bottom: 4px;
   }
 
   .model-row {
@@ -748,7 +750,7 @@
     padding: 0 12px 8px;
   }
 
-  .model-list.switching {
+  .model-section-group.switching {
     opacity: 0.6;
     pointer-events: none;
   }

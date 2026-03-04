@@ -6,6 +6,7 @@ mod history;
 mod hotkey;
 mod permissions;
 pub mod platform;
+pub mod models;
 mod polisher;
 mod qwen3_asr;
 pub mod settings;
@@ -1241,7 +1242,8 @@ pub fn run() {
                                         }
 
                                         if let Some(overlay) = app.get_webview_window("overlay") {
-                                            let _ = overlay.emit("recording-status", "recording");
+                                            let rec_status = if is_edit_hotkey { "edit_recording" } else { "recording" };
+                                            let _ = overlay.emit("recording-status", rec_status);
                                             let _ = overlay.emit("recording-max-duration", MAX_RECORDING_SECS);
                                             if let Ok(Some(monitor)) = overlay.current_monitor() {
                                                 let screen = monitor.size();

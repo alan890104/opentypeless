@@ -35,94 +35,77 @@ pub enum LocalSttEngine {
 pub enum Qwen3AsrModel {
     #[default]
     Qwen3Asr1_7B,
-    Qwen3Asr1_7BFull,
-    Qwen3Asr1_7BQ8,
     Qwen3Asr0_6B,
 }
 
 impl Qwen3AsrModel {
     pub fn model_dir_name(&self) -> &'static str {
         match self {
-            Self::Qwen3Asr1_7BFull => "qwen3-asr-1.7b-full",
-            Self::Qwen3Asr1_7BQ8   => "qwen3-asr-1.7b-q8",
-            Self::Qwen3Asr1_7B     => "qwen3-asr-1.7b",
-            Self::Qwen3Asr0_6B     => "qwen3-asr-0.6b",
+            Self::Qwen3Asr1_7B => "qwen3-asr-1.7b",
+            Self::Qwen3Asr0_6B => "qwen3-asr-0.6b",
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Qwen3Asr1_7BFull => "Qwen3-ASR 1.7B BF16",
-            Self::Qwen3Asr1_7BQ8   => "Qwen3-ASR 1.7B Q8",
-            Self::Qwen3Asr1_7B     => "Qwen3-ASR 1.7B Q4",
-            Self::Qwen3Asr0_6B     => "Qwen3-ASR 0.6B",
+            Self::Qwen3Asr1_7B => "Qwen3-ASR 1.7B",
+            Self::Qwen3Asr0_6B => "Qwen3-ASR 0.6B",
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Qwen3Asr1_7BFull => "Full BF16 precision, no quantization loss. Largest file. 30 languages + 22 Chinese dialects.",
-            Self::Qwen3Asr1_7BQ8   => "8-bit quantized, near-lossless vs BF16. 30 languages + 22 Chinese dialects.",
-            Self::Qwen3Asr1_7B     => "4-bit quantized, good accuracy at smaller size. 30 languages + 22 Chinese dialects.",
-            Self::Qwen3Asr0_6B     => "Fast and efficient. Greatly outperforms Whisper on Chinese and noisy speech. 30 languages + 22 Chinese dialects.",
+            Self::Qwen3Asr1_7B => "Highest accuracy, BF16. 30 languages + 22 Chinese dialects.",
+            Self::Qwen3Asr0_6B => "Fast and efficient. Greatly outperforms Whisper on Chinese and noisy speech. 30 languages + 22 Chinese dialects.",
         }
     }
 
     pub fn size_bytes(&self) -> u64 {
         match self {
-            Self::Qwen3Asr1_7BFull => 4_400_000_000, // BF16 safetensors
-            Self::Qwen3Asr1_7BQ8   => 1_900_000_000, // Q8_0 GGUF
-            Self::Qwen3Asr1_7B     => 1_200_000_000, // Q4_K GGUF
-            Self::Qwen3Asr0_6B     =>   966_000_000, // Q8_0 GGUF
-        }
-    }
-
-    /// Returns true if this variant uses GGUF format (vs safetensors).
-    pub fn is_gguf(&self) -> bool {
-        !matches!(self, Self::Qwen3Asr1_7BFull)
-    }
-
-    /// GGUF filename for GGUF-format variants. Panics for safetensors variants.
-    pub fn gguf_filename(&self) -> &'static str {
-        match self {
-            Self::Qwen3Asr1_7B     => "qwen3_asr_1.7b_q4_k.gguf",
-            Self::Qwen3Asr1_7BQ8   => "qwen3_asr_1.7b_q8_0.gguf",
-            Self::Qwen3Asr0_6B     => "qwen3_asr_0.6b_q8_0.gguf",
-            Self::Qwen3Asr1_7BFull => panic!("Qwen3Asr1_7BFull is safetensors, not GGUF"),
+            Self::Qwen3Asr1_7B => 4_700_000_000, // BF16 safetensors (sharded)
+            Self::Qwen3Asr0_6B => 1_876_000_000, // BF16 safetensors (single)
         }
     }
 
     /// Files that must be present for the model to be considered downloaded.
     pub fn required_files(&self) -> Vec<&'static str> {
         match self {
-            Self::Qwen3Asr1_7BFull => vec![
+            Self::Qwen3Asr1_7B => vec![
                 "config.json",
                 "tokenizer.json",
                 "model.safetensors.index.json",
                 "model-00001-of-00002.safetensors",
                 "model-00002-of-00002.safetensors",
             ],
-            _ => vec![self.gguf_filename()],
+            Self::Qwen3Asr0_6B => vec![
+                "config.json",
+                "tokenizer.json",
+                "model.safetensors",
+            ],
         }
     }
 
     /// Returns `(filename, hf_repo)` pairs for downloading.
     pub fn download_files(&self) -> Vec<(&'static str, &'static str)> {
         match self {
-            Self::Qwen3Asr1_7BFull => vec![
+            Self::Qwen3Asr1_7B => vec![
                 ("config.json",                      "Qwen/Qwen3-ASR-1.7B"),
                 ("tokenizer.json",                   "Qwen/Qwen3-1.7B"),
                 ("model.safetensors.index.json",     "Qwen/Qwen3-ASR-1.7B"),
                 ("model-00001-of-00002.safetensors", "Qwen/Qwen3-ASR-1.7B"),
                 ("model-00002-of-00002.safetensors", "Qwen/Qwen3-ASR-1.7B"),
             ],
-            _ => vec![(self.gguf_filename(), "Alkd/qwen3-asr-gguf")],
+            Self::Qwen3Asr0_6B => vec![
+                ("config.json",       "Qwen/Qwen3-ASR-0.6B"),
+                ("tokenizer.json",    "Qwen/Qwen3-0.6B"),
+                ("model.safetensors", "Qwen/Qwen3-ASR-0.6B"),
+            ],
         }
     }
 
     /// Sorted large → small by size_bytes.
     pub fn all() -> &'static [Self] {
-        &[Self::Qwen3Asr1_7BFull, Self::Qwen3Asr1_7BQ8, Self::Qwen3Asr1_7B, Self::Qwen3Asr0_6B]
+        &[Self::Qwen3Asr1_7B, Self::Qwen3Asr0_6B]
     }
 }
 
@@ -439,10 +422,14 @@ pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &r
     let resp = match stt_cloud.provider {
         SttProvider::Deepgram => {
             let lang_param = if language.is_empty() { "multi".to_string() } else { language.to_string() };
-            let url = format!("{}?model={}&language={}&punctuate=true&smart_format=true",
-                endpoint, model_id, lang_param);
             client
-                .post(&url)
+                .post(endpoint)
+                .query(&[
+                    ("model", model_id.as_str()),
+                    ("language", lang_param.as_str()),
+                    ("punctuate", "true"),
+                    ("smart_format", "true"),
+                ])
                 .header("Authorization", format!("Token {}", stt_cloud.api_key))
                 .header("Content-Type", "audio/wav")
                 .body(wav_bytes)

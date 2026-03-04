@@ -5534,6 +5534,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "candle-core",
+ "candle-nn",
  "candle-transformers",
  "cpal",
  "dirs",

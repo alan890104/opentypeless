@@ -435,7 +435,7 @@
 
   let polishMode = $state<string>('local');
   let polishModels = $state<PolishModelInfo[]>([]);
-  let selectedPolishModel = $state<PolishModel>('qwen3');
+  let selectedPolishModel = $state<PolishModel>('phi4_mini');
 
   let selectedModelDownloaded = $derived(
     polishModels.find(m => m.id === selectedPolishModel)?.downloaded ?? false
@@ -455,9 +455,9 @@
   async function fetchPolishModels() {
     try {
       polishModels = await listPolishModels();
-      // Pre-select qwen3 if available, otherwise first model
+      // Pre-select first available model
       if (!polishModels.find(m => m.id === selectedPolishModel)) {
-        selectedPolishModel = polishModels[0]?.id ?? 'qwen3';
+        selectedPolishModel = polishModels.find(m => m.recommended)?.id ?? polishModels[0]?.id ?? 'phi4_mini';
       }
     } catch {
       polishModels = [];
@@ -949,7 +949,7 @@
                   <div class="setup-model-info">
                     <div class="setup-model-name">
                       {t(`polishModel.${camelCase(model.id)}.name`)}
-                      {#if model.id === 'qwen3'}
+                      {#if model.recommended}
                         <span class="setup-model-badge">{t('setup.polishRecommended')}</span>
                       {/if}
                     </div>

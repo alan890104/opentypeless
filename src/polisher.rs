@@ -8,9 +8,6 @@ use candle_core::quantized::gguf_file;
 use candle_core::quantized::tokenizer::TokenizerFromGguf;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_llama::ModelWeights as LlamaWeights;
-use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2Weights;
-use candle_transformers::models::quantized_qwen3::ModelWeights as Qwen3Weights;
 
 use crate::context_detect::AppContext;
 
@@ -145,84 +142,133 @@ impl CloudConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PolishModel {
-    #[default]
-    LlamaTaiwan,
-    Qwen25,
-    Qwen3,
-    #[serde(rename = "qwen3_0_6b")]
+    /// Phi-4-mini-instruct — default for English and other languages.
+    /// Accepts legacy "phi35_mini", "phi4_mini", "phi4_mm" serde aliases for transparent migration.
+    #[serde(rename = "phi4_mini")]
+    #[serde(alias = "phi35_mini")]
+    #[serde(alias = "phi4_mm")]
+    Phi4Mm,
+    #[serde(rename = "ministral3b")]
+    Ministral3B,
+    #[serde(rename = "qwen3_4b")]
+    #[serde(alias = "qwen35_4b")]
     Qwen3_4B,
+    /// Catch-all for settings that contain old model names (llama_taiwan, qwen25, qwen3, qwen3_0_6b).
+    /// Will be migrated to a language-appropriate default on next load.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Default for PolishModel {
+    fn default() -> Self {
+        Self::Phi4Mm
+    }
 }
 
 impl PolishModel {
     pub fn filename(&self) -> &'static str {
         match self {
-            PolishModel::LlamaTaiwan => "Llama-3-Taiwan-8B-Instruct.Q4_K_M.gguf",
-            PolishModel::Qwen25 => "qwen2.5-7b-instruct-q4_k_m.gguf",
-            PolishModel::Qwen3 => "Qwen3-8B-Q4_K_M.gguf",
+            PolishModel::Phi4Mm => "Phi-4-mini-instruct-Q4_K_M.gguf",
+            PolishModel::Ministral3B => "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
             PolishModel::Qwen3_4B => "Qwen3-4B-Q4_K_M.gguf",
+            PolishModel::Unknown => "Phi-4-mini-instruct-Q4_K_M.gguf",
         }
     }
 
     pub fn download_url(&self) -> &'static str {
         match self {
-            PolishModel::LlamaTaiwan => {
-                "https://huggingface.co/QuantFactory/Llama-3-Taiwan-8B-Instruct-GGUF/resolve/main/Llama-3-Taiwan-8B-Instruct.Q4_K_M.gguf"
+            PolishModel::Phi4Mm => {
+                "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf"
             }
-            PolishModel::Qwen25 => {
-                "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf"
-            }
-            PolishModel::Qwen3 => {
-                "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"
+            PolishModel::Ministral3B => {
+                "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
             }
             PolishModel::Qwen3_4B => {
-                "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
+                "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
+            }
+            PolishModel::Unknown => {
+                "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf"
             }
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            PolishModel::LlamaTaiwan => "Llama 3 Taiwan 8B",
-            PolishModel::Qwen25 => "Qwen 2.5 7B",
-            PolishModel::Qwen3 => "Qwen 3 8B",
-            PolishModel::Qwen3_4B => "Qwen 3 4B (Demo)",
+            PolishModel::Phi4Mm => "Phi 4 Mini",
+            PolishModel::Ministral3B => "Ministral 3B",
+            PolishModel::Qwen3_4B => "Qwen 3 4B",
+            PolishModel::Unknown => "Phi 4 Mini",
         }
     }
 
     pub fn size_bytes(&self) -> u64 {
         match self {
-            PolishModel::LlamaTaiwan => 4_920_000_000,
-            PolishModel::Qwen25 => 4_680_000_000,
-            PolishModel::Qwen3 => 5_030_000_000,
-            PolishModel::Qwen3_4B => 2_500_000_000,
+            PolishModel::Phi4Mm => 2_491_874_272,
+            PolishModel::Ministral3B => 2_147_023_008,
+            PolishModel::Qwen3_4B => 2_497_281_312,
+            PolishModel::Unknown => 2_491_874_272,
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            PolishModel::LlamaTaiwan => "Best for Traditional Chinese",
-            PolishModel::Qwen25 => "Multilingual",
-            PolishModel::Qwen3 => "Latest multilingual, thinking/non-thinking",
-            PolishModel::Qwen3_4B => "Compact model for quick demo/testing",
+            PolishModel::Phi4Mm => "Best for English and general use",
+            PolishModel::Ministral3B => "Excellent for European languages",
+            PolishModel::Qwen3_4B => "Best for Chinese (Mandarin)",
+            PolishModel::Unknown => "Best for English and general use",
         }
     }
 
     pub fn all() -> &'static [PolishModel] {
-        if cfg!(debug_assertions) {
-            &[PolishModel::LlamaTaiwan, PolishModel::Qwen25, PolishModel::Qwen3, PolishModel::Qwen3_4B]
-        } else {
-            &[PolishModel::LlamaTaiwan, PolishModel::Qwen25, PolishModel::Qwen3]
-        }
+        &[PolishModel::Phi4Mm, PolishModel::Ministral3B, PolishModel::Qwen3_4B]
     }
 
     fn eos_token(&self) -> &'static str {
         match self {
-            PolishModel::LlamaTaiwan => "<|eot_id|>",
-            PolishModel::Qwen25 | PolishModel::Qwen3 | PolishModel::Qwen3_4B => "<|im_end|>",
+            PolishModel::Phi4Mm | PolishModel::Unknown => "<|end|>",
+            PolishModel::Ministral3B => "</s>",
+            PolishModel::Qwen3_4B => "<|im_end|>",
         }
+    }
+
+    /// Filename for the external tokenizer JSON, if the GGUF tokenizer is not gpt2-compatible.
+    /// Returns `None` for models whose tokenizer is embedded in the GGUF (gpt2/BPE type).
+    pub fn tokenizer_filename(&self) -> Option<&'static str> {
+        match self {
+            PolishModel::Phi4Mm | PolishModel::Unknown => Some("phi4_mini_tokenizer.json"),
+            PolishModel::Qwen3_4B | PolishModel::Ministral3B => None,
+        }
+    }
+
+    /// Download URL for the external tokenizer JSON, paired with `tokenizer_filename`.
+    pub fn tokenizer_url(&self) -> Option<&'static str> {
+        match self {
+            PolishModel::Phi4Mm | PolishModel::Unknown => Some(
+                "https://huggingface.co/microsoft/Phi-4-mini-instruct/resolve/main/tokenizer.json",
+            ),
+            PolishModel::Qwen3_4B | PolishModel::Ministral3B => None,
+        }
+    }
+}
+
+/// Recommend a local polish model based on the language setting.
+pub fn recommend_polish_model(language: Option<&str>) -> PolishModel {
+    let tag = language
+        .unwrap_or("")
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    match tag.as_str() {
+        "zh" => PolishModel::Qwen3_4B,
+        "de" | "fr" | "es" | "it" | "pt" | "nl" | "pl" | "ru" | "uk" | "cs" | "sk"
+        | "hr" | "sl" | "sr" | "bg" | "ro" | "el" | "sv" | "da" | "no" | "fi" | "is"
+        | "ca" | "gl" | "af" | "cy" | "be" | "mk" | "bs" | "lb"
+        | "hu" | "et" | "lv" | "lt" | "mt" | "ga" => PolishModel::Ministral3B,
+        _ => PolishModel::Phi4Mm,
     }
 }
 
@@ -237,10 +283,11 @@ pub struct PolishModelInfo {
     pub downloaded: bool,
     pub file_size_on_disk: u64,
     pub is_active: bool,
+    pub recommended: bool,
 }
 
 impl PolishModelInfo {
-    pub fn from_model(model: &PolishModel, active_model: &PolishModel) -> Self {
+    pub fn from_model(model: &PolishModel, active_model: &PolishModel, recommended_model: &PolishModel) -> Self {
         let dir = crate::settings::models_dir();
         let (downloaded, file_size_on_disk) = model_file_status(&dir, model);
         Self {
@@ -251,6 +298,7 @@ impl PolishModelInfo {
             downloaded,
             file_size_on_disk,
             is_active: model == active_model,
+            recommended: model == recommended_model,
         }
     }
 }
@@ -323,18 +371,29 @@ impl DictionaryConfig {
     }
 }
 
-/// Format a system+user prompt using the correct chat template.
+/// Format a prompt using the correct chat template for local models.
+///
+/// Content (`user`) is placed BEFORE the instruction (`system`) within the user turn.
+/// This improves instruction-following for small models: tokens closer to the generation
+/// position carry higher effective attention weight, so the instruction lands last.
+/// Cloud models use a conventional system/user split instead (see `run_cloud_inference`).
 fn format_chat_prompt(model: &PolishModel, system: &str, user: &str) -> String {
     match model {
-        PolishModel::LlamaTaiwan => format!(
-            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\
-             {system}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\
-             {user}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        PolishModel::Phi4Mm => format!(
+            "<|user|>\n{user}\n\n{system}<|end|>\n\
+             <|assistant|>\n"
         ),
-        PolishModel::Qwen25 | PolishModel::Qwen3 | PolishModel::Qwen3_4B => format!(
-            "<|im_start|>system\n{system}<|im_end|>\n\
-             <|im_start|>user\n{user}<|im_end|>\n\
-             <|im_start|>assistant\n"
+        PolishModel::Ministral3B => format!(
+            "<s>[INST] {user}\n\n{system} [/INST]"
+        ),
+        PolishModel::Qwen3_4B => format!(
+            // Pre-fill empty <think></think> so the model skips thinking mode.
+            "<|im_start|>user\n{user}\n\n{system}<|im_end|>\n\
+             <|im_start|>assistant\n<think>\n\n</think>\n\n"
+        ),
+        PolishModel::Unknown => format!(
+            "<|user|>\n{user}\n\n{system}<|end|>\n\
+             <|assistant|>\n"
         ),
     }
 }
@@ -343,24 +402,24 @@ fn format_chat_prompt(model: &PolishModel, system: &str, user: &str) -> String {
 
 /// Wraps the three supported quantized model architectures with a unified interface.
 enum QuantizedModel {
-    Llama(LlamaWeights),
-    Qwen2(Qwen2Weights),
-    Qwen3(Qwen3Weights),
+    Phi4Mm(crate::models::phi4::ModelWeights),
+    Ministral3B(crate::models::mistral3::ModelWeights),
+    Qwen3(candle_transformers::models::quantized_qwen3::ModelWeights),
 }
 
 impl QuantizedModel {
     fn forward(&mut self, input: &Tensor, index_pos: usize) -> candle_core::Result<Tensor> {
         match self {
-            Self::Llama(m) => m.forward(input, index_pos),
-            Self::Qwen2(m) => m.forward(input, index_pos),
+            Self::Phi4Mm(m) => m.forward(input, index_pos),
+            Self::Ministral3B(m) => m.forward(input, index_pos),
             Self::Qwen3(m) => m.forward(input, index_pos),
         }
     }
 
     fn clear_kv_cache(&mut self) {
         match self {
-            Self::Llama(_) => {}
-            Self::Qwen2(_) => {}
+            Self::Phi4Mm(m) => m.clear_kv_cache(),
+            Self::Ministral3B(m) => m.clear_kv_cache(),
             Self::Qwen3(m) => m.clear_kv_cache(),
         }
     }
@@ -1333,17 +1392,36 @@ pub fn validate_gguf_file(path: &std::path::Path, expected_model: &PolishModel) 
 pub fn is_polish_ready(model_dir: &std::path::Path, config: &PolishConfig) -> bool {
     match config.mode {
         PolishMode::Cloud => !config.cloud.api_key.is_empty(),
-        PolishMode::Local => model_dir.join(config.model.filename()).exists(),
+        PolishMode::Local => {
+            if !model_dir.join(config.model.filename()).exists() {
+                return false;
+            }
+            if let Some(tok) = config.model.tokenizer_filename() {
+                if !model_dir.join(tok).exists() {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
 /// Check existence and size in a single metadata call.
+/// Returns `(downloaded, file_size_on_disk)`.  `downloaded` is false if the
+/// GGUF is missing OR if the model requires a separate tokenizer that is not
+/// yet present on disk.
 pub fn model_file_status(model_dir: &std::path::Path, model: &PolishModel) -> (bool, u64) {
     let path = model_dir.join(model.filename());
-    match std::fs::metadata(&path) {
-        Ok(m) => (true, m.len()),
-        Err(_) => (false, 0),
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return (false, 0);
     }
+    if let Some(tok) = model.tokenizer_filename() {
+        if !model_dir.join(tok).exists() {
+            return (false, size);
+        }
+    }
+    (true, size)
 }
 
 /// Invalidate the cached LLM model so it gets reloaded on next use.
@@ -1389,30 +1467,41 @@ fn ensure_llm_loaded(
         let device = Device::new_metal(0)
             .or_else(|_| Device::new_cuda(0))
             .unwrap_or(Device::Cpu);
+        tracing::debug!("LLM device: {:?}", device);
 
         let mut file = std::fs::File::open(model_path)
             .map_err(|e| format!("Cannot open model: {}", e))?;
         let content = gguf_file::Content::read(&mut file)
             .map_err(|e| format!("Read GGUF: {}", e))?;
 
-        // Extract tokenizer from GGUF metadata
-        let tokenizer = tokenizers::Tokenizer::from_gguf(&content)
-            .map_err(|e| format!("Load tokenizer from GGUF: {}", e))?;
+        // Load tokenizer — from external JSON for models with non-gpt2 GGUF tokenizers
+        // (e.g. Phi-3.5-mini uses SentencePiece/llama type), else from GGUF metadata.
+        let tokenizer = if let Some(tok_filename) = polish_model.tokenizer_filename() {
+            let tok_path = model_path.parent().unwrap_or(model_path).join(tok_filename);
+            tokenizers::Tokenizer::from_file(&tok_path)
+                .map_err(|e| format!("Load tokenizer from {}: {}", tok_path.display(), e))?
+        } else {
+            tokenizers::Tokenizer::from_gguf(&content)
+                .map_err(|e| format!("Load tokenizer from GGUF: {}", e))?
+        };
 
         // Load model weights (consumes content; file reader is positioned at tensor data)
         let model = match polish_model {
-            PolishModel::LlamaTaiwan => QuantizedModel::Llama(
-                LlamaWeights::from_gguf(content, &mut file, &device)
-                    .map_err(|e| format!("Load Llama: {}", e))?,
+            PolishModel::Phi4Mm => QuantizedModel::Phi4Mm(
+                crate::models::phi4::ModelWeights::from_gguf(content, &mut file, &device)
+                    .map_err(|e| format!("Load Phi4Mm: {}", e))?,
             ),
-            PolishModel::Qwen25 => QuantizedModel::Qwen2(
-                Qwen2Weights::from_gguf(content, &mut file, &device)
-                    .map_err(|e| format!("Load Qwen2: {}", e))?,
+            PolishModel::Ministral3B => QuantizedModel::Ministral3B(
+                crate::models::mistral3::ModelWeights::from_gguf(content, &mut file, &device)
+                    .map_err(|e| format!("Load Ministral3B: {}", e))?,
             ),
-            PolishModel::Qwen3 | PolishModel::Qwen3_4B => QuantizedModel::Qwen3(
-                Qwen3Weights::from_gguf(content, &mut file, &device)
-                    .map_err(|e| format!("Load Qwen3: {}", e))?,
+            PolishModel::Qwen3_4B => QuantizedModel::Qwen3(
+                candle_transformers::models::quantized_qwen3::ModelWeights::from_gguf(content, &mut file, &device)
+                    .map_err(|e| format!("Load Qwen3_4B: {}", e))?,
             ),
+            PolishModel::Unknown => {
+                return Err("Unknown polish model — please select a model in Settings → Polish".to_string());
+            }
         };
 
         *cache = Some(LlmModelCache {

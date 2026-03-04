@@ -108,6 +108,11 @@ pub fn load_settings() -> Settings {
         Settings::default()
     };
     settings.stt.migrate_language();
+    // Migrate old local polish model names to new ones
+    if settings.polish.model == polisher::PolishModel::Unknown {
+        settings.polish.model = polisher::recommend_polish_model(settings.language.as_deref());
+        save_settings_to_disk(&settings);
+    }
     settings
 }
 

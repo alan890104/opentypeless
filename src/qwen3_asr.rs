@@ -24,10 +24,11 @@ pub fn warm_qwen3_asr(
     cache: &Mutex<Option<Qwen3AsrCache>>,
     model: &Qwen3AsrModel,
 ) -> Result<(), String> {
-    // Recover from a poisoned mutex (caused by a panic in a prior warm/transcribe call).
-    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = cache.lock().unwrap_or_else(|e| {
+        tracing::warn!("Qwen3-ASR cache mutex was poisoned; recovering from potentially inconsistent state");
+        e.into_inner()
+    });
 
-    // Already loaded with the right model?
     if let Some(ref c) = *guard {
         if &c.model == model {
             return Ok(());
@@ -45,15 +46,22 @@ pub fn warm_qwen3_asr(
     tracing::info!("Loading Qwen3-ASR {}...", model.display_name());
     let t0 = std::time::Instant::now();
 
-    let device = Device::new_metal(0).unwrap_or(Device::Cpu);
-    let engine = if model.is_gguf() {
-        let gguf_path = model_dir.join(model.gguf_filename());
-        qwen3_asr::inference::AsrInference::load_gguf(&gguf_path, device)
-            .map_err(|e| format!("Qwen3-ASR load failed: {}", e))?
+    let device = if cfg!(feature = "metal") {
+        Device::new_metal(0).unwrap_or_else(|e| {
+            tracing::warn!("Metal unavailable, falling back to CPU (Qwen3-ASR will be slow): {}", e);
+            Device::Cpu
+        })
+    } else if candle_core::utils::cuda_is_available() {
+        Device::new_cuda(0).unwrap_or_else(|e| {
+            tracing::warn!("CUDA unavailable, falling back to CPU (Qwen3-ASR will be slow): {}", e);
+            Device::Cpu
+        })
     } else {
-        qwen3_asr::inference::AsrInference::load(&model_dir, device)
-            .map_err(|e| format!("Qwen3-ASR load failed: {}", e))?
+        tracing::warn!("No GPU acceleration available, Qwen3-ASR will run on CPU");
+        Device::Cpu
     };
+    let engine = qwen3_asr::inference::AsrInference::load(&model_dir, device)
+        .map_err(|e| format!("Qwen3-ASR load failed: {}", e))?;
 
     tracing::info!("Qwen3-ASR {} loaded in {:.1?}", model.display_name(), t0.elapsed());
     *guard = Some(Qwen3AsrCache { engine, model: model.clone() });
@@ -61,18 +69,18 @@ pub fn warm_qwen3_asr(
 }
 
 /// Transcribe `samples` (16 kHz f32) using the cached Qwen3-ASR engine.
-///
-/// Lazy-loads the engine if the cache is empty or stale.
 pub fn transcribe_with_cached_qwen3_asr(
     cache: &Mutex<Option<Qwen3AsrCache>>,
     samples: &[f32],
     model: &Qwen3AsrModel,
     language: &str,
 ) -> Result<String, String> {
-    // Ensure the engine is ready.
     warm_qwen3_asr(cache, model)?;
 
-    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = cache.lock().unwrap_or_else(|e| {
+        tracing::warn!("Qwen3-ASR cache mutex was poisoned; recovering from potentially inconsistent state");
+        e.into_inner()
+    });
     let c = guard.as_ref().ok_or("Qwen3-ASR cache empty after warm")?;
 
     let lang_opt: Option<&str> = if language == "auto" || language.is_empty() {

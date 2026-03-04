@@ -27,6 +27,7 @@
   type Phase =
     | 'preparing'
     | 'recording'
+    | 'edit_recording'
     | 'processing'
     | 'transcribing'
     | 'polishing'
@@ -71,6 +72,8 @@
         return 'capsule preparing';
       case 'recording':
         return 'capsule recording';
+      case 'edit_recording':
+        return 'capsule edit-recording';
       case 'processing':
         return 'capsule processing';
       case 'transcribing':
@@ -100,6 +103,8 @@
         return t('overlay.preparing');
       case 'recording':
         return t('overlay.recording');
+      case 'edit_recording':
+        return t('overlay.editRecording');
       case 'processing':
       case 'transcribing':
         return t('overlay.transcribing');
@@ -132,9 +137,9 @@
 
   let showDot: boolean = $derived.by(() => false); // dot is never shown in practice (CSS handles it on .recording)
   let showSpinner: boolean = $derived.by(() => is('preparing', 'processing', 'transcribing', 'polishing', 'switching'));
-  let showWaveform: boolean = $derived.by(() => is('recording'));
+  let showWaveform: boolean = $derived.by(() => is('recording', 'edit_recording'));
   let showIconResult: boolean = $derived.by(() => is('pasted', 'copied', 'error', 'edit_requires_polish', 'edited'));
-  let showTimer: boolean = $derived.by(() => is('recording'));
+  let showTimer: boolean = $derived.by(() => is('recording', 'edit_recording'));
   let showUndoIcon: boolean = $derived.by(() => is('undo'));
   let showUndoBar: boolean = $derived.by(() => is('undo'));
   let isCheckIcon: boolean = $derived.by(() => is('pasted', 'copied', 'edited'));
@@ -237,6 +242,13 @@
     startWaveform();
   }
 
+  function setEditRecording() {
+    clearCommon();
+    phase = 'edit_recording';
+    startTimer();
+    startWaveform();
+  }
+
   function setProcessing() {
     clearCommon();
     phase = 'processing';
@@ -328,6 +340,9 @@
       case 'recording':
         setRecording();
         break;
+      case 'edit_recording':
+        setEditRecording();
+        break;
       case 'processing':
         setProcessing();
         break;
@@ -368,7 +383,7 @@
         ctx.scale(dpr, dpr);
         waveCtx = ctx;
         // Canvas just became available — start animation if we're already recording
-        if (phase === 'recording' && !waveAnimId) {
+        if ((phase === 'recording' || phase === 'edit_recording') && !waveAnimId) {
           animateWaveform();
         }
       }
@@ -755,6 +770,17 @@
           rgba(255, 140, 0, 0.35) calc((1 - var(--rec-progress)) * 100%),
           rgba(255, 59, 48, 0.35)
         ),
+      0 0 0 0.5px rgba(255, 255, 255, 0.08),
+      inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
+  }
+
+  /* ── State: Edit recording (blue) ── */
+  .capsule.edit-recording {
+    justify-content: flex-start;
+    background: rgba(10, 132, 255, 0.92);
+    border-color: rgba(120, 200, 255, 0.2);
+    box-shadow:
+      0 8px 32px rgba(10, 132, 255, 0.35),
       0 0 0 0.5px rgba(255, 255, 255, 0.08),
       inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
   }
