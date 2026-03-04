@@ -6,6 +6,7 @@
     onRecordingMaxDuration,
     onAudioLevels,
     onModelSwitching,
+    onTranscriptionPartial,
     triggerUndo,
     getSettings,
   } from '$lib/api';
@@ -44,6 +45,7 @@
   let recProgress: number = $state(0);
   let maxDuration: number = $state(30);
   let undoAnimating: boolean = $state(false);
+  let partialText: string = $state('');
 
   // ── Canvas & waveform ──
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -71,7 +73,7 @@
       case 'preparing':
         return 'capsule preparing';
       case 'recording':
-        return 'capsule recording';
+        return partialText.length > 0 ? 'capsule recording has-partial' : 'capsule recording';
       case 'edit_recording':
         return 'capsule edit-recording';
       case 'processing':
@@ -146,6 +148,17 @@
   let isErrorIcon: boolean = $derived.by(() => is('error', 'edit_requires_polish'));
   let isPolishSpinner: boolean = $derived.by(() => is('polishing'));
   let isSwitchingSpinner: boolean = $derived.by(() => is('switching'));
+
+  // ── Partial text display (live preview during Qwen3-ASR recording) ──
+  const PARTIAL_MAX = 16;
+  let showingPartial: boolean = $derived.by(() => is('recording') && partialText.length > 0);
+  let displayLabelText: string = $derived(
+    showingPartial
+      ? (partialText.length > PARTIAL_MAX
+          ? '…' + partialText.slice(-(PARTIAL_MAX - 1))
+          : partialText)
+      : labelText,
+  );
 
   // ── Waveform animation ──
   function animateWaveform() {
@@ -228,6 +241,7 @@
     stopTimer();
     stopWaveform();
     undoAnimating = false;
+    partialText = '';
   }
 
   function setPreparing() {
@@ -440,7 +454,12 @@
         setPreparing();
       }
     });
-    unlisteners = [u1, u2, u3, u4];
+    const u5 = await onTranscriptionPartial((payload) => {
+      if (phase === 'recording') {
+        partialText = payload.text;
+      }
+    });
+    unlisteners = [u1, u2, u3, u4, u5];
   });
 
   onDestroy(() => {
@@ -503,7 +522,7 @@
   {/if}
 
   <!-- Label -->
-  <span class="label">{labelText}</span>
+  <span class="label">{displayLabelText}</span>
 
   <!-- Timer -->
   {#if showTimer}
@@ -560,6 +579,11 @@
       inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.92);
     animation: fadeIn 0.25s ease-out;
+    transition: width 0.25s ease;
+  }
+
+  .capsule.has-partial {
+    width: 280px;
   }
 
   @keyframes fadeIn {

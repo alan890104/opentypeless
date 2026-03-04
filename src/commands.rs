@@ -650,6 +650,8 @@ pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         &dictionary_terms,
         &state.vad_ctx,
         stt_config.vad_enabled,
+        &state.streaming_active,
+        &state.streaming_result,
     )
     .map(|(text, _samples)| text)
 }
@@ -1132,14 +1134,21 @@ pub fn download_llm_model(app: AppHandle, state: State<'_, AppState>) -> Result<
 
 #[tauri::command]
 pub fn list_polish_models(state: State<'_, AppState>) -> Vec<PolishModelInfo> {
-    let active_model = state
+    let (active_model, recommended) = state
         .settings
         .lock()
-        .map(|s| s.polish.model.clone())
+        .map(|s| {
+            let lang = if !s.stt.language.is_empty() && s.stt.language != "auto" {
+                Some(s.stt.language.clone())
+            } else {
+                s.language.clone()
+            };
+            (s.polish.model.clone(), polisher::recommend_polish_model(lang.as_deref()))
+        })
         .unwrap_or_default();
     polisher::PolishModel::all()
         .iter()
-        .map(|m| PolishModelInfo::from_model(m, &active_model))
+        .map(|m| PolishModelInfo::from_model(m, &active_model, &recommended))
         .collect()
 }
 
@@ -1180,7 +1189,10 @@ pub fn download_polish_model(app: AppHandle, model: polisher::PolishModel) -> Re
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let model_path = dir.join(model.filename());
-    if model_path.exists() {
+    let tokenizer_path = model.tokenizer_filename().map(|f| dir.join(f));
+    let already_complete = model_path.exists()
+        && tokenizer_path.as_ref().map_or(true, |p| p.exists());
+    if already_complete {
         let _ = app.emit("polish-model-download-progress", serde_json::json!({
             "status": "complete",
             "downloaded": 0u64,
@@ -1301,6 +1313,30 @@ pub fn download_polish_model(app: AppHandle, model: polisher::PolishModel) -> Re
                 "message": format!("Failed to rename temp file: {}", e)
             }));
             return;
+        }
+
+        // Download external tokenizer JSON if required (e.g. Phi-4-mini).
+        if let (Some(tok_url), Some(tok_path)) = (model.tokenizer_url(), tokenizer_path.as_ref()) {
+            if !tok_path.exists() {
+                match client.get(tok_url).send().and_then(|r| r.bytes()) {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::write(tok_path, &bytes) {
+                            let _ = app.emit("polish-model-download-progress", serde_json::json!({
+                                "status": "error",
+                                "message": format!("Failed to write tokenizer: {}", e)
+                            }));
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = app.emit("polish-model-download-progress", serde_json::json!({
+                            "status": "error",
+                            "message": format!("Failed to download tokenizer: {}", e)
+                        }));
+                        return;
+                    }
+                }
+            }
         }
 
         if let Some(app_state) = app.try_state::<AppState>() {

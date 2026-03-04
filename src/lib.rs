@@ -64,6 +64,8 @@ pub struct AppState {
     pub qwen3_asr_ctx: Mutex<Option<qwen3_asr::Qwen3AsrCache>>,
     pub model_switching: AtomicBool,
     pub reconnecting: AtomicBool,
+    pub streaming_active: AtomicBool,
+    pub streaming_result: Mutex<Option<String>>,
 }
 
 /// Restore original clipboard content from saved_clipboard.
@@ -160,6 +162,8 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
             &dictionary_terms,
             &state.vad_ctx,
             stt_config.vad_enabled,
+            &state.streaming_active,
+            &state.streaming_result,
         ) {
             Ok((text, samples_16k)) => {
                 let transcribe_elapsed = pipeline_start.elapsed();
@@ -464,6 +468,8 @@ fn stop_edit_and_replace(app: &AppHandle) {
             &edit_dict_terms,
             &state.vad_ctx,
             stt_config.vad_enabled,
+            &state.streaming_active,
+            &state.streaming_result,
         ) {
             Ok((instruction, _samples)) => {
                 tracing::info!("Edit instruction received: {} graphemes", instruction.graphemes(true).count());
@@ -764,6 +770,8 @@ pub fn run() {
                 qwen3_asr_ctx: Mutex::new(None),
                 model_switching: AtomicBool::new(false),
                 reconnecting: AtomicBool::new(false),
+                streaming_active: AtomicBool::new(false),
+                streaming_result: Mutex::new(None),
             });
 
             // Register a CoreAudio listener for default-input-device changes.
@@ -1227,6 +1235,45 @@ pub fn run() {
                                                         }
                                                     }
                                                 }
+                                            });
+                                        }
+
+                                        // ── Live-preview feeder (Qwen3-ASR non-edit mode only) ──
+                                        let should_stream = !is_edit_hotkey && {
+                                            state.settings.lock()
+                                                .map(|s| s.stt.mode == SttMode::Local
+                                                    && s.stt.local_engine == stt::LocalSttEngine::Qwen3Asr)
+                                                .unwrap_or(false)
+                                        };
+                                        if should_stream {
+                                            state.streaming_active.store(true, Ordering::SeqCst);
+                                            if let Ok(mut r) = state.streaming_result.lock() {
+                                                *r = None;
+                                            }
+                                            let feeder_app = app.clone();
+                                            let (feeder_model, feeder_lang) = state.settings.lock()
+                                                .map(|s| (s.stt.qwen3_asr_model.clone(), s.stt.language.clone()))
+                                                .unwrap_or_default();
+                                            std::thread::spawn(move || {
+                                                let fstate = feeder_app.state::<AppState>();
+                                                // Wait for engine warm (max 8s)
+                                                let mut waited = 0u64;
+                                                while waited < 8000 {
+                                                    let ready = fstate.qwen3_asr_ctx.lock().ok()
+                                                        .and_then(|g| g.as_ref().map(|c| c.model == feeder_model))
+                                                        .unwrap_or(false);
+                                                    if ready { break; }
+                                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                                    waited += 200;
+                                                }
+                                                let ready = fstate.qwen3_asr_ctx.lock().ok()
+                                                    .and_then(|g| g.as_ref().map(|c| c.model == feeder_model))
+                                                    .unwrap_or(false);
+                                                if !ready {
+                                                    fstate.streaming_active.store(false, Ordering::SeqCst);
+                                                    return;
+                                                }
+                                                qwen3_asr::run_feeder_loop(feeder_app, feeder_lang);
                                             });
                                         }
 

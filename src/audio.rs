@@ -357,6 +357,8 @@ pub fn do_stop_recording(
     dictionary_terms: &[String],
     vad_ctx: &Mutex<Option<VadContextCache>>,
     vad_enabled: bool,
+    streaming_active: &AtomicBool,
+    streaming_result: &Mutex<Option<String>>,
 ) -> Result<(String, Vec<f32>), String> {
     let sample_rate = sample_rate_mutex
         .lock()
@@ -433,13 +435,39 @@ pub fn do_stop_recording(
                 result
             }
             LocalSttEngine::Qwen3Asr => {
+                // Wait for the streaming feeder thread to complete (max 3 s).
+                if streaming_active.load(Ordering::SeqCst) {
+                    let deadline = Instant::now() + std::time::Duration::from_millis(3000);
+                    while streaming_active.load(Ordering::SeqCst) {
+                        if Instant::now() >= deadline {
+                            tracing::warn!("[streaming] feeder timeout — falling back to batch inference");
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+
+                // Use the streaming result if available.
+                if let Ok(mut guard) = streaming_result.lock() {
+                    if let Some(text) = guard.take() {
+                        tracing::info!("[timing] STT (local qwen3-asr streaming): {:.0?}", stt_start.elapsed());
+                        return if text.is_empty() {
+                            Err("no_speech".to_string())
+                        } else {
+                            Ok((text, samples_16k))
+                        };
+                    }
+                }
+
+                // Fallback: batch inference.
+                tracing::info!("[streaming] using batch fallback");
                 let result = crate::qwen3_asr::transcribe_with_cached_qwen3_asr(
                     qwen3_asr_ctx,
                     &samples_16k,
                     &stt_config.qwen3_asr_model,
                     language,
                 )?;
-                tracing::info!("[timing] STT (local qwen3-asr): {:.0?}", stt_start.elapsed());
+                tracing::info!("[timing] STT (local qwen3-asr batch): {:.0?}", stt_start.elapsed());
                 result
             }
         },

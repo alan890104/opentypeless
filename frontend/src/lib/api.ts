@@ -20,6 +20,7 @@ import type {
   PolishModel,
   Qwen3AsrModelInfo,
   Qwen3AsrModelId,
+  TranscriptionPartialPayload,
 } from './types';
 
 // ── Settings ──
@@ -135,6 +136,11 @@ export const onRecordingMaxDuration = (cb: (secs: number) => void): Promise<Unli
 
 export const onAudioLevels = (cb: (levels: number[]) => void): Promise<UnlistenFn> =>
   listen<number[]>('audio-levels', (e) => cb(e.payload));
+
+export const onTranscriptionPartial = (
+  cb: (payload: TranscriptionPartialPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<TranscriptionPartialPayload>('transcription-partial', (e) => cb(e.payload));
 
 export const onTranscriptionResult = (cb: (text: string) => void): Promise<UnlistenFn> =>
   listen<string>('transcription-result', (e) => cb(e.payload));

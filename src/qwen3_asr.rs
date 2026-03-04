@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::sync::{atomic::Ordering, Mutex};
+use std::time::Duration;
+
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::stt::{qwen3_asr_model_dir, is_qwen3_asr_downloaded, Qwen3AsrModel};
 
@@ -91,4 +94,108 @@ pub fn invalidate_qwen3_asr_cache(cache: &Mutex<Option<Qwen3AsrCache>>) {
     if let Ok(mut guard) = cache.lock() {
         *guard = None;
     }
+}
+
+/// Feeder loop for live-preview streaming transcription.
+///
+/// Runs in a dedicated thread during recording. Every 2 seconds, reads the
+/// new audio delta from `AppState.buffer`, feeds it to the Qwen3-ASR streaming
+/// engine, and emits a `"transcription-partial"` event to the overlay window.
+///
+/// When `is_recording` becomes false, exits the loop, calls `finish_streaming`
+/// to flush remaining audio, stores the final text in `AppState.streaming_result`,
+/// and clears `AppState.streaming_active`.
+///
+/// # Safety
+/// `StreamingState` contains candle `Tensor` objects and is NOT `Send`. It is
+/// created and used entirely within this function (i.e. within the feeder
+/// thread), so no cross-thread transfer occurs.
+pub(crate) fn run_feeder_loop(app: AppHandle, language: String) {
+    let state = app.state::<crate::AppState>();
+
+    // Read the native sample rate once (won't change during recording).
+    let sr = state.sample_rate.lock().ok().and_then(|v| *v).unwrap_or(44100);
+
+    // Initialise streaming session while holding the engine lock briefly.
+    // SAFETY: `sstate` is only used in this function / this thread.
+    let mut sstate = {
+        let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
+        let c = match guard.as_ref() {
+            Some(c) => c,
+            None => {
+                state.streaming_active.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        let opts = if !language.is_empty() && language != "auto" {
+            qwen3_asr::StreamingOptions::default().with_language(&language)
+        } else {
+            qwen3_asr::StreamingOptions::default()
+        };
+        c.engine.init_streaming(opts)
+        // lock released here
+    };
+
+    let mut last_tail: usize = 0;
+
+    // Main loop: every 2 s, feed new audio to the engine.
+    loop {
+        std::thread::sleep(Duration::from_millis(2000));
+        if !state.is_recording.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // Read only the new delta since the last iteration.
+        let delta_raw: Vec<f32> = {
+            let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let delta = buf[last_tail..].to_vec();
+            last_tail = buf.len();
+            delta
+        };
+        if delta_raw.is_empty() {
+            continue;
+        }
+
+        // Resample to 16 kHz if needed.
+        let delta_16k = if sr != 16000 {
+            crate::audio::resample(&delta_raw, sr, 16000)
+        } else {
+            delta_raw
+        };
+
+        // Run incremental inference (engine lock held only during this call).
+        let partial = {
+            let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
+            guard.as_ref().map(|c| c.engine.feed_audio(&mut sstate, &delta_16k))
+        };
+
+        if let Some(Ok(Some(result))) = partial {
+            if !result.text.is_empty() {
+                tracing::debug!("[streaming] partial: {:?}", result.text);
+                if let Some(overlay) = app.get_webview_window("overlay") {
+                    let _ = overlay.emit(
+                        "transcription-partial",
+                        serde_json::json!({ "text": result.text }),
+                    );
+                }
+            }
+        }
+    }
+
+    // Flush remaining audio and store the final result.
+    let final_text = {
+        let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|c| c.engine.finish_streaming(&mut sstate).ok())
+            .map(|r| r.text)
+            .unwrap_or_default()
+    };
+    tracing::info!("[streaming] finish: {:?}", final_text);
+
+    if let Ok(mut r) = state.streaming_result.lock() {
+        *r = if final_text.is_empty() { None } else { Some(final_text) };
+    }
+    // Store result before clearing active flag (SeqCst ensures visibility ordering).
+    state.streaming_active.store(false, Ordering::SeqCst);
 }

@@ -239,6 +239,12 @@ export type Page =
   | 'about'
   | 'test';
 
+// ── Streaming ──
+
+export interface TranscriptionPartialPayload {
+  text: string;
+}
+
 // ── Overlay ──
 
 export type OverlayStatus =
