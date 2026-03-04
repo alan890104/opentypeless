@@ -1,11 +1,11 @@
-//! Phi-4 Multimodal (text decoder) via GGUF.
+//! Phi-4 Mini (text decoder) via GGUF.
 //!
 //! Uses `phi3.*` GGUF metadata keys — same prefix as all Phi-3/4 family.
 //!
 //! Verified against:
 //!   - candle-transformers quantized_phi3.rs (tensor names)
 //!   - llama.cpp tensor_mapping.py (HF → GGUF name mapping)
-//!   - microsoft/phi-4-multimodal-instruct/config.json (dimensions)
+//!   - microsoft/Phi-4-mini-instruct/config.json (dimensions)
 //!
 //! ## Tensor layout in GGUF (phi3 architecture tag)
 //!
@@ -221,7 +221,7 @@ impl ModelWeights {
         let rms_norm_eps = md_get("phi3.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
         let rope_dim = md_get("phi3.rope.dimension_count")?.to_u32()? as usize;
         // phi3.rope.freq_base is present in most modern GGUFs; default to 10000
-        // (Phi-4 Multimodal uses rope_theta=10000 in config.json)
+        // (Phi-4 Mini uses rope_theta=10000 in config.json)
         let rope_freq_base = ct
             .metadata
             .get("phi3.rope.freq_base")

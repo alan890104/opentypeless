@@ -422,10 +422,14 @@ pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &r
     let resp = match stt_cloud.provider {
         SttProvider::Deepgram => {
             let lang_param = if language.is_empty() { "multi".to_string() } else { language.to_string() };
-            let url = format!("{}?model={}&language={}&punctuate=true&smart_format=true",
-                endpoint, model_id, lang_param);
             client
-                .post(&url)
+                .post(endpoint)
+                .query(&[
+                    ("model", model_id.as_str()),
+                    ("language", lang_param.as_str()),
+                    ("punctuate", "true"),
+                    ("smart_format", "true"),
+                ])
                 .header("Authorization", format!("Token {}", stt_cloud.api_key))
                 .header("Content-Type", "audio/wav")
                 .body(wav_bytes)

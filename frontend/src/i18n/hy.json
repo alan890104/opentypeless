@@ -61,7 +61,7 @@
   "setup.sttModelDownloadBtn": "Ներբեռնել և շարունակել",
   "setup.sttModelSystemInfo": "Համակարգ՝ {ram} RAM, {disk} հատկացված սկավառակի տարածք",
   "polishModel.phi4Mini.name": "Phi 4 Mini",
-  "polishModel.phi4Mini.desc": "Best for English and European languages",
+  "polishModel.phi4Mini.desc": "Best for English and general use",
   "polishModel.ministral3b.name": "Ministral 3B",
   "polishModel.ministral3b.desc": "Excellent for European languages",
   "polishModel.qwen34b.name": "Qwen 3 4B",
