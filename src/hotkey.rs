@@ -147,3 +147,50 @@ pub fn hotkey_display_label(s: &str) -> String {
     }
     labels.join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_multi_modifier_hotkey() {
+        let s = parse_hotkey_string("Control+Alt+KeyZ").unwrap();
+        assert_eq!(s.key, Code::KeyZ);
+    }
+
+    #[test]
+    fn empty_string_returns_none() {
+        assert!(parse_hotkey_string("").is_none());
+    }
+
+    #[test]
+    fn invalid_key_returns_none() {
+        assert!(parse_hotkey_string("Alt+Invalid").is_none());
+    }
+
+    /// Bare key without modifier — valid parse.  The caller (update_meeting_hotkey)
+    /// must enforce the modifier-required rule, not the parser.
+    #[test]
+    fn bare_key_no_modifier_is_valid_parse() {
+        let s = parse_hotkey_string("KeyM").unwrap();
+        assert_eq!(s.key, Code::KeyM);
+    }
+
+    /// Display label strips "Key" / "Digit" prefixes and renders macOS symbols.
+    #[test]
+    fn display_label_strips_prefixes() {
+        let label = hotkey_display_label("Alt+Digit5");
+        assert!(label.contains("5"), "got: {}", label);
+        assert!(!label.contains("Digit"), "should strip Digit prefix: {}", label);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn display_label_macos_symbols() {
+        let label = hotkey_display_label("Alt+Control+Shift+Super+KeyA");
+        assert!(label.contains("⌥"), "missing Alt symbol: {}", label);
+        assert!(label.contains("⌃"), "missing Ctrl symbol: {}", label);
+        assert!(label.contains("⇧"), "missing Shift symbol: {}", label);
+        assert!(label.contains("⌘"), "missing Cmd symbol: {}", label);
+    }
+}

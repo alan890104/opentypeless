@@ -522,3 +522,142 @@ fn chrono_free_format(epoch_secs: u64) -> String {
         format!("{}", epoch_secs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── count_words: CJK segmentation is the non-obvious part ──
+
+    #[test]
+    fn cjk_each_char_is_one_word() {
+        assert_eq!(count_words("你好世界"), 4);
+    }
+
+    #[test]
+    fn mixed_cjk_latin() {
+        // "Hello" = 1, "你好" = 2, "world" = 1
+        let count = count_words("Hello 你好 world");
+        assert!(count >= 4, "expected at least 4, got {}", count);
+    }
+
+    // ── validate_id: path traversal prevention ──
+
+    #[test]
+    fn path_traversal_rejected() {
+        assert!(validate_id("../etc/passwd").is_err());
+        assert!(validate_id("foo/bar").is_err());
+        assert!(validate_id("").is_err());
+    }
+
+    #[test]
+    fn generated_id_passes_validation() {
+        let id = generate_id();
+        assert!(validate_id(&id).is_ok(), "generated id '{}' failed validation", id);
+    }
+
+    // ── Retention cleanup: the cutoff math and cascading audio delete ──
+
+    fn make_entry(id: &str, timestamp_ms: i64) -> HistoryEntry {
+        HistoryEntry {
+            id: id.to_string(),
+            timestamp: timestamp_ms,
+            text: "polished".to_string(),
+            raw_text: "raw".to_string(),
+            reasoning: None,
+            stt_model: "test".to_string(),
+            polish_model: "test".to_string(),
+            duration_secs: 1.0,
+            has_audio: true,
+            stt_elapsed_ms: 100,
+            polish_elapsed_ms: Some(50),
+            total_elapsed_ms: 150,
+            app_name: "".to_string(),
+            bundle_id: "".to_string(),
+            chars_per_sec: 10.0,
+            word_count: 1,
+        }
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+
+    #[test]
+    fn retention_deletes_old_entries_and_audio_files() {
+        let hist_dir = tempfile::tempdir().unwrap();
+        let audio_dir = tempfile::tempdir().unwrap();
+        let hp = hist_dir.path();
+        let ap = audio_dir.path();
+        init_db(hp);
+
+        let now = now_ms();
+        let two_days_ago = now - 2 * 86_400_000;
+        let fresh = now - 3_600_000; // 1 hour ago
+
+        // Insert an old entry and a fresh entry.
+        add_entry(hp, ap, make_entry("111_111_111", two_days_ago), 0);
+        add_entry(hp, ap, make_entry("222_222_222", fresh), 0);
+
+        // Create fake audio files for both.
+        std::fs::write(ap.join("111_111_111.wav"), b"old").unwrap();
+        std::fs::write(ap.join("222_222_222.wav"), b"new").unwrap();
+
+        // Now add a third entry with retention_days=1 — triggers cleanup.
+        add_entry(hp, ap, make_entry("333_333_333", now), 1);
+
+        let entries = load_history(hp);
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert!(!ids.contains(&"111_111_111"), "old entry should be deleted");
+        assert!(ids.contains(&"222_222_222"), "fresh entry should remain");
+        assert!(ids.contains(&"333_333_333"), "new entry should exist");
+
+        // Audio for old entry should be cleaned up.
+        assert!(!ap.join("111_111_111.wav").exists(), "old audio should be deleted");
+        assert!(ap.join("222_222_222.wav").exists(), "fresh audio should remain");
+    }
+
+    #[test]
+    fn retention_zero_keeps_everything() {
+        let hist_dir = tempfile::tempdir().unwrap();
+        let audio_dir = tempfile::tempdir().unwrap();
+        let hp = hist_dir.path();
+        let ap = audio_dir.path();
+        init_db(hp);
+
+        let old_ts = now_ms() - 365 * 86_400_000; // 1 year ago
+        add_entry(hp, ap, make_entry("111_111_111", old_ts), 0);
+
+        let entries = load_history(hp);
+        assert_eq!(entries.len(), 1, "retention_days=0 should keep all entries");
+    }
+
+    // ── History stats aggregation ──
+
+    #[test]
+    fn stats_aggregate_correctly() {
+        let hist_dir = tempfile::tempdir().unwrap();
+        let audio_dir = tempfile::tempdir().unwrap();
+        let hp = hist_dir.path();
+        let ap = audio_dir.path();
+        init_db(hp);
+
+        let now = now_ms();
+        let mut e1 = make_entry("111_111_111", now);
+        e1.duration_secs = 10.5;
+        e1.word_count = 20;
+        let mut e2 = make_entry("222_222_222", now - 1000);
+        e2.duration_secs = 5.0;
+        e2.word_count = 10;
+        add_entry(hp, ap, e1, 0);
+        add_entry(hp, ap, e2, 0);
+
+        let stats = get_stats(hp);
+        assert_eq!(stats.total_entries, 2);
+        assert!((stats.total_duration_secs - 15.5).abs() < 0.01);
+        assert_eq!(stats.total_words, 30);
+    }
+}

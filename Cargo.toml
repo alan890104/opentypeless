@@ -62,5 +62,8 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
 ] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -304,3 +304,125 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
         .as_millis() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_note(id: &str) -> MeetingNote {
+        MeetingNote {
+            id: id.to_string(),
+            title: format!("Test Note {}", id),
+            transcript: String::new(),
+            created_at: now_millis(),
+            updated_at: now_millis(),
+            duration_secs: 0.0,
+            stt_model: "test".to_string(),
+            is_recording: false,
+            word_count: 0,
+            summary: String::new(),
+        }
+    }
+
+    // ── WAL file: the "everything is a file" design ──
+
+    #[test]
+    fn wal_multi_append_accumulates() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        append_wal(p, "n1", "Hello ");
+        append_wal(p, "n1", "world ");
+        append_wal(p, "n1", "foo");
+        assert_eq!(read_wal(p, "n1"), "Hello world foo");
+    }
+
+    #[test]
+    fn wal_read_nonexistent_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_wal(dir.path(), "missing"), "");
+    }
+
+    /// Recording notes read transcript from WAL, not SQLite.
+    /// This is the core design rule — verify it works.
+    #[test]
+    fn get_note_reads_wal_for_recording_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_db(p);
+        let mut note = make_note("rec");
+        note.is_recording = true;
+        create_note(p, &note).unwrap();
+        append_wal(p, "rec", "live transcript data");
+        let fetched = get_note(p, "rec").unwrap();
+        assert_eq!(fetched.transcript, "live transcript data");
+        // word_count should be recomputed from WAL content
+        assert!(fetched.word_count > 0);
+    }
+
+    /// finalize writes WAL content to SQLite and clears is_recording.
+    #[test]
+    fn finalize_persists_transcript_to_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_db(p);
+        let mut note = make_note("fin");
+        note.is_recording = true;
+        create_note(p, &note).unwrap();
+        finalize_note(p, "fin", "Hello world transcript", 42.5).unwrap();
+        let fetched = get_note(p, "fin").unwrap();
+        assert!(!fetched.is_recording);
+        assert_eq!(fetched.transcript, "Hello world transcript");
+        assert!((fetched.duration_secs - 42.5).abs() < 0.01);
+        assert!(fetched.word_count > 0);
+    }
+
+    // ── Crash recovery: the most critical safety path ──
+
+    #[test]
+    fn recover_stuck_notes_restores_from_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_db(p);
+        let mut note = make_note("stuck");
+        note.is_recording = true;
+        create_note(p, &note).unwrap();
+        append_wal(p, "stuck", "recovered text");
+
+        recover_stuck_notes(p);
+
+        let fetched = get_note(p, "stuck").unwrap();
+        assert!(!fetched.is_recording);
+        assert_eq!(fetched.transcript, "recovered text");
+        assert_eq!(read_wal(p, "stuck"), "", "WAL should be cleaned up");
+    }
+
+    #[test]
+    fn recover_stuck_notes_handles_crash_before_any_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_db(p);
+        let mut note = make_note("stuck2");
+        note.is_recording = true;
+        create_note(p, &note).unwrap();
+        // No WAL file — crash happened before any STT output
+
+        recover_stuck_notes(p);
+
+        let fetched = get_note(p, "stuck2").unwrap();
+        assert!(!fetched.is_recording);
+        assert_eq!(fetched.transcript, "");
+    }
+
+    /// delete_all must also clean up WAL files (not just SQLite rows).
+    #[test]
+    fn delete_all_cleans_up_wal_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_db(p);
+        create_note(p, &make_note("1")).unwrap();
+        append_wal(p, "1", "data");
+        delete_all_notes(p).unwrap();
+        assert!(list_notes(p).is_empty());
+        assert_eq!(read_wal(p, "1"), "");
+    }
+}

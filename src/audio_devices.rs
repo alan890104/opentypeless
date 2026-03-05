@@ -93,3 +93,53 @@ pub fn resolve_input_device(preferred: Option<String>) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify all patterns match their canonical device names.
+    #[test]
+    fn detects_all_known_virtual_devices() {
+        let cases = [
+            ("BlackHole 2ch", true),
+            ("Loopback Audio", true),
+            ("Soundflower (2ch)", true),
+            ("VB-Cable", true),
+            ("VoiceMeeter Output", true),
+            ("Speaker Audio Recorder", true),
+            ("OBS-Monitor", true),
+            ("Zoom Audio Device", true),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(is_known_virtual_device(name), expected, "failed for: {}", name);
+        }
+    }
+
+    /// Real hardware devices must not be filtered.
+    #[test]
+    fn allows_real_devices() {
+        let real = [
+            "MacBook Pro Microphone",
+            "External Microphone",
+            "USB Audio Device",
+            "Blue Yeti",
+            "AirPods Pro",
+        ];
+        for name in real {
+            assert!(!is_known_virtual_device(name), "false positive: {}", name);
+        }
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert!(is_known_virtual_device("BLACKHOLE 2CH"));
+        assert!(is_known_virtual_device("blackhole 2ch"));
+    }
+
+    #[test]
+    fn preferred_device_always_honoured() {
+        let result = resolve_input_device(Some("My USB Mic".to_string()));
+        assert_eq!(result, Some("My USB Mic".to_string()));
+    }
+}
