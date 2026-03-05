@@ -138,10 +138,8 @@ pub fn update_edit_hotkey(
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|e| format!("Failed to unregister shortcuts: {}", e))?;
-
+    // Validate BEFORE unregistering, so a failed validation cannot leave
+    // all shortcuts permanently unregistered (mirrors update_meeting_hotkey).
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
 
     if let Some(ref hk) = new_edit_hotkey {
@@ -158,6 +156,11 @@ pub fn update_edit_hotkey(
         }
     }
     settings.edit_hotkey = new_edit_hotkey.filter(|s| !s.is_empty());
+
+    // Unregister only after validation succeeds.
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| format!("Failed to unregister shortcuts: {}", e))?;
 
     let primary = parse_hotkey_string(&settings.hotkey)
         .ok_or_else(|| "Invalid primary hotkey".to_string())?;
