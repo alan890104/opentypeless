@@ -67,11 +67,13 @@ pub struct AppState {
     pub downloading: AtomicBool,
     pub audio_thread: Mutex<Option<audio::AudioThreadControl>>,
     pub qwen3_asr_ctx: Mutex<Option<qwen3_asr::Qwen3AsrCache>>,
-    /// Condvar signalled by `warm_qwen3_asr` once the engine cache is populated.
-    /// Lets `wait_engine_ready` sleep without polling instead of burning 200 ms
-    /// sleep cycles while the model loads.
-    pub engine_ready_cv: Condvar,
-    pub engine_ready_mu: Mutex<()>,
+    /// Condvar/flag pair used by `warm_qwen3_asr` (producer) and
+    /// `wait_engine_ready` (consumer) to avoid busy-polling.  The flag and
+    /// the Condvar share the same lock (`qwen3_ready_mu`) so there is no
+    /// lost-wakeup window.  Scoped to Qwen3-ASR only; Whisper uses try_lock
+    /// + skip semantics instead.
+    pub qwen3_ready_cv: Condvar,
+    pub qwen3_ready_mu: Mutex<bool>,
     pub model_switching: AtomicBool,
     pub reconnecting: AtomicBool,
     pub streaming_active: AtomicBool,
@@ -938,8 +940,8 @@ pub fn run() {
                 downloading: AtomicBool::new(false),
                 audio_thread: Mutex::new(audio_thread_init),
                 qwen3_asr_ctx: Mutex::new(None),
-                engine_ready_cv: Condvar::new(),
-                engine_ready_mu: Mutex::new(()),
+                qwen3_ready_cv: Condvar::new(),
+                qwen3_ready_mu: Mutex::new(false),
                 model_switching: AtomicBool::new(false),
                 reconnecting: AtomicBool::new(false),
                 streaming_active: AtomicBool::new(false),
@@ -1086,7 +1088,7 @@ pub fn run() {
                             }
                             stt::LocalSttEngine::Qwen3Asr => {
                                 if stt::is_qwen3_asr_downloaded(&qwen3_model) {
-                                    if let Err(e) = qwen3_asr::warm_qwen3_asr(&state.qwen3_asr_ctx, &qwen3_model, Some(&state.engine_ready_cv)) {
+                                    if let Err(e) = qwen3_asr::warm_qwen3_asr(&state.qwen3_asr_ctx, &qwen3_model, Some((&state.qwen3_ready_cv, &state.qwen3_ready_mu))) {
                                         tracing::error!("Qwen3-ASR pre-warm failed: {}", e);
                                     }
                                 }
@@ -1418,7 +1420,7 @@ pub fn run() {
                                                         }
                                                         stt::LocalSttEngine::Qwen3Asr => {
                                                             if let Err(e) = qwen3_asr::warm_qwen3_asr(
-                                                                &state.qwen3_asr_ctx, &qwen3_model, Some(&state.engine_ready_cv),
+                                                                &state.qwen3_asr_ctx, &qwen3_model, Some((&state.qwen3_ready_cv, &state.qwen3_ready_mu)),
                                                             ) {
                                                                 tracing::warn!("Recording-start warm (Qwen3-ASR) skipped: {}", e);
                                                             }
@@ -1470,7 +1472,7 @@ pub fn run() {
                                             let feeder_app = app.clone();
                                             std::thread::spawn(move || {
                                                 let fstate = feeder_app.state::<AppState>();
-                                                if !qwen3_asr::wait_engine_ready(&fstate.qwen3_asr_ctx, &feeder_model, &fstate.engine_ready_cv, &fstate.engine_ready_mu, 8000) {
+                                                if !qwen3_asr::wait_engine_ready(&fstate.qwen3_asr_ctx, &feeder_model, &fstate.qwen3_ready_cv, &fstate.qwen3_ready_mu, 8000) {
                                                     tracing::warn!("[streaming] engine warm-up timed out after 8s — no live preview");
                                                     fstate.streaming_active.store(false, Ordering::SeqCst);
                                                     return;
@@ -1724,11 +1726,11 @@ fn start_meeting_mode(app: &AppHandle) {
                     let fstate = feeder_app.state::<AppState>();
 
                     // Proactively trigger model warm-up (no-op if already loaded).
-                    if let Err(e) = qwen3_asr::warm_qwen3_asr(&fstate.qwen3_asr_ctx, &qwen3_model, Some(&fstate.engine_ready_cv)) {
+                    if let Err(e) = qwen3_asr::warm_qwen3_asr(&fstate.qwen3_asr_ctx, &qwen3_model, Some((&fstate.qwen3_ready_cv, &fstate.qwen3_ready_mu))) {
                         tracing::warn!("Meeting mode: engine warm failed: {}", e);
                     }
 
-                    if !qwen3_asr::wait_engine_ready(&fstate.qwen3_asr_ctx, &qwen3_model, &fstate.engine_ready_cv, &fstate.engine_ready_mu, 8000) {
+                    if !qwen3_asr::wait_engine_ready(&fstate.qwen3_asr_ctx, &qwen3_model, &fstate.qwen3_ready_cv, &fstate.qwen3_ready_mu, 8000) {
                         tracing::warn!("Meeting mode: engine not ready after 8s, aborting");
                         fstate.meeting_active.store(false, Ordering::SeqCst);
                         fstate.is_recording.store(false, Ordering::SeqCst);

@@ -2187,6 +2187,11 @@ pub async fn switch_qwen3_asr_model(
 
         // Invalidate stale cache so next transcription loads the new model.
         qwen3::invalidate_qwen3_asr_cache(&state.qwen3_asr_ctx);
+        // Reset the readiness flag so wait_engine_ready doesn't wake immediately
+        // and see a None cache if recording starts before the new model is warmed.
+        if let Ok(mut flag) = state.qwen3_ready_mu.lock() {
+            *flag = false;
+        }
 
         // Pre-warm inline if already downloaded.
         if crate::stt::is_qwen3_asr_downloaded(&model) {
@@ -2203,7 +2208,7 @@ pub async fn switch_qwen3_asr_model(
 
             // Pre-warm. Use catch_unwind so model_switching is always cleared on panic.
             let warm_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model, Some(&state.engine_ready_cv))
+                qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model, Some((&state.qwen3_ready_cv, &state.qwen3_ready_mu)))
             }));
 
             // Emit "done" and hide overlay on the main thread, then clear the flag.
@@ -2374,7 +2379,7 @@ pub fn download_qwen3_asr_model(
             .map(|s| s.stt.qwen3_asr_model.clone())
             .unwrap_or_default();
         if active_model == model {
-            if let Err(e) = qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model, Some(&state.engine_ready_cv)) {
+            if let Err(e) = qwen3::warm_qwen3_asr(&state.qwen3_asr_ctx, &model, Some((&state.qwen3_ready_cv, &state.qwen3_ready_mu))) {
                 tracing::warn!("download_qwen3_asr_model: post-download warm failed: {}", e);
             }
         }

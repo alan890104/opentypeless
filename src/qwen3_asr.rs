@@ -18,15 +18,16 @@ pub struct Qwen3AsrCache {
 
 /// Load (or reuse) the Qwen3-ASR engine for `model`.
 ///
-/// If `ready_cv` is provided, `notify_all` is called after the cache is
-/// populated so that `wait_engine_ready` can wake up immediately instead of
-/// burning a 200 ms poll cycle.
+/// If `ready` is provided as `Some((cv, mu))`, the boolean flag inside `mu`
+/// is set to `true` and `cv.notify_all()` is called after the cache is
+/// populated.  The flag and the Condvar share the same lock, which eliminates
+/// the lost-wakeup race that would exist if they were independent locks.
 ///
 /// Returns an error string if the model files are missing or loading fails.
 pub fn warm_qwen3_asr(
     cache: &Mutex<Option<Qwen3AsrCache>>,
     model: &Qwen3AsrModel,
-    ready_cv: Option<&Condvar>,
+    ready: Option<(&Condvar, &Mutex<bool>)>,
 ) -> Result<(), String> {
     let mut guard = cache.lock().unwrap_or_else(|e| {
         tracing::warn!("Qwen3-ASR cache mutex was poisoned; recovering from potentially inconsistent state");
@@ -56,8 +57,11 @@ pub fn warm_qwen3_asr(
 
     tracing::info!("Qwen3-ASR {} loaded in {:.1?}", model.display_name(), t0.elapsed());
     *guard = Some(Qwen3AsrCache { engine, model: model.clone() });
-    drop(guard); // release lock before notifying so waiters can acquire it immediately
-    if let Some(cv) = ready_cv {
+    drop(guard); // release cache lock before touching ready_mu to preserve lock ordering
+    if let Some((cv, mu)) = ready {
+        let mut flag = mu.lock().unwrap_or_else(|e| e.into_inner());
+        *flag = true;
+        drop(flag);
         cv.notify_all();
     }
     Ok(())
@@ -70,7 +74,7 @@ pub fn transcribe_with_cached_qwen3_asr(
     model: &Qwen3AsrModel,
     language: &str,
 ) -> Result<String, String> {
-    warm_qwen3_asr(cache, model, None)?;
+    warm_qwen3_asr(cache, model, None /* batch path: no waiter to notify */)?;
 
     let guard = cache.lock().unwrap_or_else(|e| {
         tracing::warn!("Qwen3-ASR cache mutex was poisoned; recovering from potentially inconsistent state");
@@ -98,32 +102,41 @@ pub fn transcribe_with_cached_qwen3_asr(
 
 /// Wait until the cached Qwen3-ASR engine matches `model`, or `timeout_ms` elapses.
 ///
-/// Uses a `Condvar` to sleep without burning CPU; wakes immediately when
-/// `warm_qwen3_asr` signals `ready_cv` after populating the cache.
+/// `ready_mu: &Mutex<bool>` is the **same** mutex that `warm_qwen3_asr` holds
+/// when it sets the readiness flag and calls `notify_all`.  Sharing the lock
+/// eliminates the lost-wakeup race: `wait_timeout` releases the lock atomically,
+/// so there is no window where a notification can fire between the predicate
+/// check and the sleep.
 ///
 /// Returns `true` if the engine is ready, `false` on timeout.
 pub(crate) fn wait_engine_ready(
     ctx: &Mutex<Option<Qwen3AsrCache>>,
     model: &Qwen3AsrModel,
     ready_cv: &Condvar,
-    ready_mu: &Mutex<()>,
+    ready_mu: &Mutex<bool>,
     timeout_ms: u64,
 ) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let mut flag = ready_mu.lock().unwrap_or_else(|e| e.into_inner());
     loop {
-        {
-            let guard = ctx.lock().ok();
-            if guard.and_then(|g| g.as_ref().map(|c| c.model == *model)).unwrap_or(false) {
-                return true;
-            }
+        if *flag {
+            // Flag was set — verify the specific model variant is in the cache.
+            drop(flag);
+            return ctx
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|c| c.model == *model))
+                .unwrap_or(false);
         }
         let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
             Some(d) => d,
             None => break,
         };
-        let mu_guard = ready_mu.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = ready_cv.wait_timeout(mu_guard, remaining);
+        // wait_timeout atomically releases the lock and sleeps; no lost-wakeup window.
+        let (g, _) = ready_cv.wait_timeout(flag, remaining).unwrap_or_else(|e| e.into_inner());
+        flag = g;
     }
+    drop(flag);
     // Final check after timeout.
     ctx.lock()
         .ok()
