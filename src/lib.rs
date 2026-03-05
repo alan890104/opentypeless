@@ -201,6 +201,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
             &state.streaming_cancelled,
             &state.streaming_result,
             &state.feeder_stop_cv,
+            &state.whisper_preview_active,
         ) {
             Ok((text, samples_16k)) => {
                 let transcribe_elapsed = pipeline_start.elapsed();
@@ -517,6 +518,7 @@ fn stop_edit_and_replace(app: &AppHandle) {
             &state.streaming_cancelled,
             &state.streaming_result,
             &state.feeder_stop_cv,
+            &state.whisper_preview_active,
         ) {
             Ok((instruction, _samples)) => {
                 tracing::info!("Edit instruction received: {} graphemes", instruction.graphemes(true).count());
@@ -1342,10 +1344,13 @@ pub fn run() {
                                         };
                                         if let Some((feeder_model, feeder_lang)) = stream_config {
                                             state.streaming_active.store(true, Ordering::SeqCst);
-                                            state.streaming_cancelled.store(false, Ordering::SeqCst);
-                                            // Advance session counter so any zombie feeder from a
-                                            // prior recording cannot overwrite this session's result.
+                                            // Advance session counter BEFORE resetting streaming_cancelled.
+                                            // This closes a TOCTOU window: any zombie feeder that sees
+                                            // cancelled=false (the reset value) is guaranteed to also see
+                                            // the new session_id (SeqCst total order), so its session guard
+                                            // will reject it before it can write a stale streaming_result.
                                             let feeder_session_id = state.streaming_session.fetch_add(1, Ordering::SeqCst) + 1;
+                                            state.streaming_cancelled.store(false, Ordering::SeqCst);
                                             if let Ok(mut r) = state.streaming_result.lock() {
                                                 *r = None;
                                             }
@@ -1768,11 +1773,21 @@ fn stop_meeting_mode(app: &AppHandle) {
 
     // Save history entry (no audio file).
     {
-        let retention_days = state
+        let (retention_days, meeting_stt_model) = state
             .settings
             .lock()
-            .map(|s| s.history_retention_days)
-            .unwrap_or(0);
+            .map(|s| {
+                let model_label = match s.stt.local_engine {
+                    stt::LocalSttEngine::Qwen3Asr => {
+                        format!("Qwen3-ASR (Meeting) – {}", s.stt.qwen3_asr_model.display_name())
+                    }
+                    stt::LocalSttEngine::Whisper => {
+                        format!("Whisper (Meeting) – {}", s.stt.whisper_model.display_name())
+                    }
+                };
+                (s.history_retention_days, model_label)
+            })
+            .unwrap_or_else(|_| (0, "Meeting".to_string()));
         let ctx = state
             .captured_context
             .lock()
@@ -1790,7 +1805,7 @@ fn stop_meeting_mode(app: &AppHandle) {
             text: transcript.clone(),
             raw_text: transcript.clone(),
             reasoning: None,
-            stt_model: "Qwen3-ASR (Meeting)".to_string(),
+            stt_model: meeting_stt_model,
             polish_model: "None".to_string(),
             duration_secs,
             has_audio: false,

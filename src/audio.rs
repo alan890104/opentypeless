@@ -362,6 +362,7 @@ pub fn do_stop_recording(
     streaming_cancelled: &AtomicBool,
     streaming_result: &Mutex<Option<String>>,
     feeder_stop_cv: &std::sync::Condvar,
+    whisper_preview_active: &AtomicBool,
 ) -> Result<(String, Vec<f32>), String> {
     let sample_rate = sample_rate_mutex
         .lock()
@@ -437,6 +438,19 @@ pub fn do_stop_recording(
     let text = match stt_config.mode {
         SttMode::Local => match stt_config.local_engine {
             LocalSttEngine::Whisper => {
+                // Wait for any in-progress preview inference to release whisper_ctx
+                // (max 2 s). The feeder uses try_lock, so once is_recording=false it
+                // will not start a new inference — we just wait for the current one
+                // to complete and the feeder to exit.
+                if whisper_preview_active.load(Ordering::SeqCst) {
+                    let deadline = Instant::now() + std::time::Duration::from_millis(2000);
+                    while whisper_preview_active.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    if whisper_preview_active.load(Ordering::SeqCst) {
+                        tracing::warn!("[whisper-preview] feeder still active after 2s wait — proceeding anyway");
+                    }
+                }
                 let result = transcribe_with_cached_whisper(whisper_ctx, &samples_16k, &stt_config.whisper_model, language, app_name, dictionary_terms)?;
                 tracing::info!("[timing] STT (local whisper): {:.0?}", stt_start.elapsed());
                 result

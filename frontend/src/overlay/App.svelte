@@ -161,8 +161,8 @@
   let showingPartial: boolean = $derived.by(() => is('recording', 'meeting_recording') && partialText.length > 0);
   let displayLabelText: string = $derived(
     showingPartial
-      ? (partialText.length > PARTIAL_MAX
-          ? '…' + partialText.slice(-(PARTIAL_MAX - 1))
+      ? ([...partialText].length > PARTIAL_MAX
+          ? '…' + [...partialText].slice(-(PARTIAL_MAX - 1)).join('')
           : partialText)
       : labelText,
   );

@@ -777,6 +777,7 @@ pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         &state.streaming_cancelled,
         &state.streaming_result,
         &state.feeder_stop_cv,
+        &state.whisper_preview_active,
     )
     .map(|(text, _samples)| text)
 }
