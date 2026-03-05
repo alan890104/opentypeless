@@ -2505,6 +2505,11 @@ pub fn delete_qwen3_asr_model(
     // Wake any wait_engine_ready waiter so it re-evaluates the deadline
     // immediately rather than sleeping the full remaining timeout.
     // (flag=false → it will not return true, but avoids an unnecessary 8 s stall.)
+    // Nudge any wait_engine_ready waiter so it skips the rest of its current
+    // wait_timeout slice and re-evaluates the deadline immediately.
+    // flag=false means it will loop back to sleep (or break if deadline passed),
+    // not return true. This is called without holding qwen3_ready_mu, which is
+    // valid per std::sync::Condvar: notify_all does not require the lock.
     state.qwen3_ready_cv.notify_all();
 
     std::fs::remove_dir_all(&model_dir)
