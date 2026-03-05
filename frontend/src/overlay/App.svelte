@@ -160,17 +160,8 @@
   let isSwitchingSpinner: boolean = $derived.by(() => is('switching'));
 
   // ── Partial text display (live preview during Qwen3-ASR recording) ──
-  // Maximum characters shown in the live-preview label. Displays the trailing
-  // PARTIAL_MAX-1 chars with a leading '…' when the transcript exceeds this.
-  const PARTIAL_MAX = 30;
   let showingPartial: boolean = $derived.by(() => is('recording') && partialText.length > 0);
-  let displayLabelText: string = $derived(
-    showingPartial
-      ? ([...partialText].length > PARTIAL_MAX
-          ? '…' + [...partialText].slice(-(PARTIAL_MAX - 1)).join('')
-          : partialText)
-      : labelText,
-  );
+  let displayLabelText: string = $derived(showingPartial ? partialText : labelText);
 
   // ── Waveform animation ──
   function animateWaveform() {
@@ -563,7 +554,7 @@
   {/if}
 
   <!-- Label -->
-  <span class="label">{displayLabelText}</span>
+  <span class="label" class:partial-label={showingPartial}>{displayLabelText}</span>
 
   <!-- Timer -->
   {#if showTimer}
@@ -801,6 +792,15 @@
     line-height: 1;
   }
 
+  .label.partial-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+  }
+
   .timer {
     font-size: 12px;
     font-weight: 500;
@@ -808,6 +808,7 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
     margin-left: auto;
+    flex-shrink: 0;
     line-height: 1;
   }
 
