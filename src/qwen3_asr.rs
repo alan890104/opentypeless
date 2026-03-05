@@ -12,11 +12,7 @@ pub struct Qwen3AsrCache {
     pub model: Qwen3AsrModel,
 }
 
-// AsrInference contains Mutex<AsrInferenceInner> where AsrInferenceInner has
-// `unsafe impl Send` (candle Metal tensors use Arc-managed heap, not TLS).
-// AsrInference therefore auto-derives Send+Sync, making this explicit impl
-// redundant — retained for clarity that cross-thread use is intentional.
-unsafe impl Send for Qwen3AsrCache {}
+// Qwen3AsrCache inherits Send+Sync from AsrInference automatically.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

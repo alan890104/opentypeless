@@ -540,9 +540,14 @@ pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &r
 pub(crate) fn run_cloud_meeting_feeder_loop(
     app: AppHandle,
     cloud_config: SttCloudConfig,
-    _language: String,
+    language: String,
     session_id: u64,
 ) {
+    // Apply the caller-provided language so cloud_config stays in sync
+    // regardless of how cloud_config.language was initialised.
+    let mut cloud_config = cloud_config;
+    cloud_config.language = language;
+
     let state = app.state::<crate::AppState>();
     let sr = state.sample_rate.lock().ok().and_then(|v| *v).unwrap_or(44100);
 

@@ -1646,6 +1646,11 @@ fn stop_meeting_mode(app: &AppHandle) {
         return; // Another stop_meeting_mode call is already in progress.
     }
 
+    // Capture session_id at entry. If a new meeting starts between the timeout
+    // and the clipboard/history section, this guard prevents a zombie stop from
+    // corrupting the new session's state.
+    let our_session = state.meeting_session.load(Ordering::SeqCst);
+
     // Ensure the feeder sees is_recording=false (it may already be false if
     // triggered by dead-stream, which is fine — the store is idempotent).
     state.is_recording.store(false, Ordering::SeqCst);
@@ -1671,6 +1676,14 @@ fn stop_meeting_mode(app: &AppHandle) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Abort if a new meeting session has started while we were waiting for the
+    // feeder — another stop_meeting_mode will handle that session's transcript.
+    if state.meeting_session.load(Ordering::SeqCst) != our_session {
+        tracing::warn!("stop_meeting_mode: session advanced during wait — aborting");
+        state.meeting_stopping.store(false, Ordering::SeqCst);
+        return;
     }
 
     let transcript = state
