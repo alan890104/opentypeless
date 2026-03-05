@@ -699,8 +699,16 @@ fn cleanup_obsolete_models(models_dir: &std::path::Path) {
         }
     }
 
-    // VAD model.
-    known_files.insert("ggml-silero-v6.2.0.bin");
+    // VAD model — derive filename from the canonical path so it stays in sync
+    // automatically when the version is bumped in transcribe::vad_model_path().
+    let vad_filename_owned;
+    if let Some(name) = transcribe::vad_model_path()
+        .file_name()
+        .and_then(|n| n.to_str())
+    {
+        vad_filename_owned = name.to_owned();
+        known_files.insert(&vad_filename_owned);
+    }
 
     // Qwen3-ASR — stored as subdirectories.
     for model in &[stt::Qwen3AsrModel::Qwen3Asr1_7B, stt::Qwen3AsrModel::Qwen3Asr0_6B] {
