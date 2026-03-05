@@ -320,7 +320,7 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
     // Only trigger a silence-reset after real speech has been received since
     // the last reset, preventing repeated resets on empty/silent sessions.
     let mut had_speech_since_reset = false;
-    const RMS_THRESHOLD: f32 = 0.003;
+    const RMS_FALLBACK: f32 = 0.003;
 
     // O(1) spacing state.
     let mut has_content = false;
@@ -380,22 +380,19 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
                 delta_raw
             };
 
-            // RMS-based silence detection over the new chunk.
-            let chunk_rms = crate::audio::rms(&delta_16k);
-            if chunk_rms < RMS_THRESHOLD {
-                if had_speech_since_reset {
-                    silence_count += 1;
-                }
-            } else {
+            // Use Silero VAD (falls back to RMS if model unavailable).
+            if crate::transcribe::has_speech_vad(&state.vad_ctx, &delta_16k, RMS_FALLBACK) {
                 silence_count = 0;
                 had_speech_since_reset = true;
+            } else if had_speech_since_reset {
+                silence_count += 1;
             }
 
             chunk_buf.extend_from_slice(&delta_16k);
         }
 
-        // Silence reset: ≥ 4 s of silence after speech → transcribe and reset chunk.
-        if silence_count >= 2 && had_speech_since_reset && !chunk_buf.is_empty() {
+        // Silence reset: ≥ 2 s of silence after speech → transcribe and reset chunk.
+        if silence_count >= 1 && had_speech_since_reset && !chunk_buf.is_empty() {
             // Read last ~200 chars from WAL file for Whisper context prompt.
             let prev_text = if let Some(ref id) = note_id {
                 let full = crate::meeting_notes::read_wal(&history_dir, id);
@@ -409,11 +406,17 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
                 String::new()
             };
 
-            let seg_text = {
+            // Filter chunk through VAD before Whisper inference.
+            let stt_samples = crate::transcribe::filter_with_vad(&state.vad_ctx, &chunk_buf)
+                .unwrap_or_else(|_| chunk_buf.clone());
+
+            let seg_text = if stt_samples.is_empty() {
+                String::new()
+            } else {
                 let ctx_guard = state.whisper_ctx.lock().unwrap_or_else(|e| e.into_inner());
                 transcribe_meeting_chunk(
                     &ctx_guard,
-                    &chunk_buf,
+                    &stt_samples,
                     &language,
                     if prev_text.is_empty() {
                         None
@@ -484,7 +487,7 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
         return;
     }
 
-    // Flush remaining chunk (audio received after the last 4 s silence window).
+    // Flush remaining chunk (audio received after the last silence window).
     if !chunk_buf.is_empty() {
         // Read last ~200 chars from WAL file for Whisper context prompt.
         let prev_text = if let Some(ref id) = note_id {
@@ -499,11 +502,15 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
             String::new()
         };
 
-        let seg_text = {
+        let stt_samples = crate::transcribe::filter_with_vad(&state.vad_ctx, &chunk_buf)
+            .unwrap_or_else(|_| chunk_buf.clone());
+        let seg_text = if stt_samples.is_empty() {
+            String::new()
+        } else {
             let ctx_guard = state.whisper_ctx.lock().unwrap_or_else(|e| e.into_inner());
             transcribe_meeting_chunk(
                 &ctx_guard,
-                &chunk_buf,
+                &stt_samples,
                 &language,
                 if prev_text.is_empty() {
                     None

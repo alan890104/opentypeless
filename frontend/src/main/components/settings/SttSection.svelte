@@ -30,8 +30,11 @@
     switchQwen3AsrModel,
     downloadQwen3AsrModel,
     onQwen3AsrDownloadProgress,
+    deleteWhisperModel,
+    deleteQwen3AsrModel,
     saveApiKey,
   } from '$lib/api';
+  import { showConfirm } from '$lib/stores/ui.svelte';
   import type {
     SttMode,
     WhisperModelId,
@@ -266,6 +269,40 @@
     }
   }
 
+  // ── Model deletion ──
+
+  function confirmDeleteWhisper(model: WhisperModelInfo) {
+    const isActive = (sttConfig.local_engine ?? 'whisper') === 'whisper' && model.id === sttConfig.whisper_model;
+    const msg = t('model.deleteConfirm')
+      .replace('{name}', t(`sttModel.${camelCase(model.id)}.name`))
+      .replace('{size}', formatSize(model.file_size_on_disk || model.size_bytes))
+      + (isActive ? t('model.deleteActiveWarning') : '');
+    showConfirm(t('model.delete'), msg, t('model.delete'), async () => {
+      try {
+        await deleteWhisperModel(model.id);
+        await loadModels();
+      } catch (e) {
+        console.error('Failed to delete whisper model:', e);
+      }
+    });
+  }
+
+  function confirmDeleteQwen3(model: Qwen3AsrModelInfo) {
+    const isActive = (sttConfig.local_engine ?? 'whisper') === 'qwen3_asr' && model.id === (sttConfig.qwen3_asr_model ?? 'qwen3_asr1_7_b');
+    const msg = t('model.deleteConfirm')
+      .replace('{name}', t(`sttModel.${camelCase(model.id)}.name`))
+      .replace('{size}', formatSize(model.file_size_on_disk || model.size_bytes))
+      + (isActive ? t('model.deleteActiveWarning') : '');
+    showConfirm(t('model.delete'), msg, t('model.delete'), async () => {
+      try {
+        await deleteQwen3AsrModel(model.id);
+        await loadQwen3Models();
+      } catch (e) {
+        console.error('Failed to delete Qwen3-ASR model:', e);
+      }
+    });
+  }
+
   // ── Mode change ──
 
   function onModeChange(value: string) {
@@ -424,6 +461,15 @@
                       <path d="M2.5 7.5L5.5 10.5L11.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
                   </span>
+                  <button
+                    class="model-delete-btn"
+                    title={t('model.delete')}
+                    onclick={(e) => { e.stopPropagation(); confirmDeleteWhisper(model); }}
+                  >
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path d="M2 3.5h10M5 3.5V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1M11 3.5l-.5 8a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
                 {:else if isDownloading}
                   <span class="model-downloading-label">{Math.round(downloadPercent)}%</span>
                 {:else if isError}
@@ -493,6 +539,15 @@
                       <path d="M2.5 7.5L5.5 10.5L11.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
                   </span>
+                  <button
+                    class="model-delete-btn"
+                    title={t('model.delete')}
+                    onclick={(e) => { e.stopPropagation(); confirmDeleteQwen3(model); }}
+                  >
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path d="M2 3.5h10M5 3.5V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1M11 3.5l-.5 8a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
                 {:else if isThisDownloading}
                   <span class="model-downloading-label">{Math.round(downloadPercent)}%</span>
                 {:else if isError}
@@ -684,6 +739,36 @@
 
   .model-action {
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .model-delete-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .model-delete-btn:hover {
+    color: #ff3b30;
+    background: rgba(255, 59, 48, 0.1);
+  }
+
+  .model-delete-btn svg {
+    width: 13px;
+    height: 13px;
   }
 
   .model-downloaded-check {

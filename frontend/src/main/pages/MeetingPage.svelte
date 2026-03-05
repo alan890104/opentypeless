@@ -7,6 +7,7 @@
     getActiveMeetingNoteId,
     renameMeetingNote,
     deleteMeetingNote,
+    polishMeetingNote,
     onMeetingNoteCreated,
     onMeetingNoteUpdated,
     onMeetingNoteFinalized,
@@ -27,6 +28,10 @@
   let transcriptEl = $state<HTMLDivElement | undefined>();
   let userScrolledUp = $state(false);
 
+  // Polish / tab state
+  let polishing = $state(false);
+  let activeTab = $state<'transcript' | 'summary'>('transcript');
+
   // Copy feedback
   let copied = $state(false);
   let copiedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -39,6 +44,13 @@
   let unlisteners: UnlistenFn[] = [];
 
   let selectedNote = $derived(notes.find((n) => n.id === selectedId) ?? null);
+
+  // Auto-set active tab when note changes
+  $effect(() => {
+    if (selectedNote) {
+      activeTab = selectedNote.summary ? 'summary' : 'transcript';
+    }
+  });
 
   function formatDate(ts: number): string {
     const d = new Date(ts);
@@ -147,14 +159,43 @@
   // ── Copy ──
   async function handleCopy() {
     if (!selectedNote) return;
+    const text = activeTab === 'summary' && selectedNote.summary
+      ? selectedNote.summary
+      : selectedNote.transcript;
     try {
-      await navigator.clipboard.writeText(selectedNote.transcript);
+      await navigator.clipboard.writeText(text);
       copied = true;
       if (copiedTimeout) clearTimeout(copiedTimeout);
       copiedTimeout = setTimeout(() => (copied = false), 2000);
     } catch (e) {
       console.error('Copy failed:', e);
     }
+  }
+
+  // ── Polish ──
+  async function handlePolish() {
+    if (!selectedNote || polishing) return;
+    const noteId = selectedNote.id;
+    polishing = true;
+    try {
+      const result = await polishMeetingNote(noteId);
+      // Only apply if user hasn't switched to a different note
+      const n = notes.find((x) => x.id === noteId);
+      if (n) {
+        n.title = result.title;
+        n.summary = result.summary;
+        notes = [...notes];
+      }
+      if (selectedId === noteId) {
+        activeTab = 'summary';
+      }
+    } catch (e: any) {
+      console.error('Polish failed:', e);
+      const msg = typeof e === 'string' ? e : e?.message ?? t('meeting.polishError');
+      // Brief inline feedback — could be a toast in the future
+      alert(msg);
+    }
+    polishing = false;
   }
 
   // ── Context menu ──
@@ -195,10 +236,9 @@
     const u2 = await onMeetingNoteUpdated((p) => {
       const n = notes.find((x) => x.id === p.id);
       if (n) {
-        // Accumulate delta — the backend sends only new text, not the full transcript.
+        // Accumulate delta — the backend sends only finalized segment text.
         n.transcript += p.delta;
         n.duration_secs = p.duration_secs;
-        // Trigger reactivity
         notes = [...notes];
       }
       if (selectedId === p.id) {
@@ -308,18 +348,55 @@
             <button class="rename-btn" onclick={() => startRename(selectedNote!)} title={t('meeting.rename')}>
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
+            <button
+              class="polish-btn"
+              onclick={handlePolish}
+              disabled={polishing || selectedNote!.is_recording || !selectedNote!.transcript}
+              title={t(polishing ? 'meeting.polishing' : 'meeting.polish')}
+            >
+              {#if polishing}
+                <span class="spinner-inline"></span>
+              {:else}
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+              {/if}
+            </button>
           </h1>
         {/if}
       </div>
 
       <div class="content-divider"></div>
 
+      {#if selectedNote.summary || polishing}
+        <div class="tab-bar">
+          <button
+            class="tab-btn"
+            class:active={activeTab === 'transcript'}
+            onclick={() => (activeTab = 'transcript')}
+          >
+            {t('meeting.tabTranscript')}
+          </button>
+          <button
+            class="tab-btn"
+            class:active={activeTab === 'summary'}
+            onclick={() => (activeTab = 'summary')}
+          >
+            {t('meeting.tabSummary')}
+          </button>
+        </div>
+      {/if}
+
       <div
         class="transcript-area"
         bind:this={transcriptEl}
         onscroll={handleTranscriptScroll}
       >
-        {#if selectedNote.transcript}
+        {#if activeTab === 'summary'}
+          {#if selectedNote.summary}
+            <div class="summary-text">{selectedNote.summary}</div>
+          {:else}
+            <p class="no-content">{t('meeting.noSummaryYet')}</p>
+          {/if}
+        {:else if selectedNote.transcript}
           <pre class="transcript-text">{selectedNote.transcript}</pre>
         {:else}
           <p class="no-content">{t('meeting.noContent')}</p>
@@ -345,7 +422,7 @@
         <button
           class="copy-btn"
           onclick={handleCopy}
-          disabled={!selectedNote.transcript}
+          disabled={activeTab === 'summary' ? !selectedNote.summary : !selectedNote.transcript}
         >
           {#if copied}
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -683,6 +760,74 @@
   .copy-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .polish-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .content-title:hover .polish-btn {
+    opacity: 1;
+  }
+  .polish-btn:hover:not(:disabled) {
+    color: #f5a623;
+    background: var(--bg-hover);
+  }
+  .polish-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .spinner-inline {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-subtle);
+    border-top-color: #f5a623;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: block;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    padding: 8px 24px 0;
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab-btn:hover {
+    color: var(--text-secondary);
+  }
+  .tab-btn.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-primary, #007aff);
+  }
+
+  .summary-text {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   .content-empty {

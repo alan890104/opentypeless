@@ -14,6 +14,7 @@ pub struct MeetingNote {
     pub stt_model: String,
     pub is_recording: bool,
     pub word_count: u64,
+    pub summary: String,
 }
 
 /// Run schema migrations. Called once at app startup.
@@ -30,12 +31,17 @@ pub fn init_db(history_dir: &Path) {
                     duration_secs REAL NOT NULL DEFAULT 0.0,
                     stt_model     TEXT NOT NULL DEFAULT '',
                     is_recording  INTEGER NOT NULL DEFAULT 0,
-                    word_count    INTEGER NOT NULL DEFAULT 0
+                    word_count    INTEGER NOT NULL DEFAULT 0,
+                    summary       TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_meeting_notes_created ON meeting_notes(created_at DESC);",
             ) {
                 tracing::error!("Failed to init meeting_notes schema: {}", e);
             }
+            // Migration: add summary column for existing databases.
+            let _ = conn.execute_batch(
+                "ALTER TABLE meeting_notes ADD COLUMN summary TEXT NOT NULL DEFAULT '';",
+            );
         }
         Err(e) => tracing::error!("Failed to open DB for meeting_notes init: {}", e),
     }
@@ -51,8 +57,8 @@ fn open_db(history_dir: &Path) -> Result<Connection, rusqlite::Error> {
 pub fn create_note(history_dir: &Path, note: &MeetingNote) -> Result<(), String> {
     let conn = open_db(history_dir).map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO meeting_notes (id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO meeting_notes (id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             note.id,
             note.title,
@@ -63,6 +69,7 @@ pub fn create_note(history_dir: &Path, note: &MeetingNote) -> Result<(), String>
             note.stt_model,
             note.is_recording as i32,
             note.word_count as i64,
+            note.summary,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -73,7 +80,7 @@ pub fn get_note(history_dir: &Path, id: &str) -> Result<MeetingNote, String> {
     let conn = open_db(history_dir).map_err(|e| e.to_string())?;
     let mut note = conn
         .query_row(
-            "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count
+            "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary
              FROM meeting_notes WHERE id = ?1",
             params![id],
             map_row,
@@ -96,7 +103,7 @@ pub fn list_notes(history_dir: &Path) -> Vec<MeetingNote> {
         }
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count
+        "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary
          FROM meeting_notes ORDER BY created_at DESC",
     ) {
         Ok(s) => s,
@@ -271,7 +278,24 @@ fn map_row(row: &rusqlite::Row) -> Result<MeetingNote, rusqlite::Error> {
         stt_model: row.get(6)?,
         is_recording: row.get::<_, i32>(7)? != 0,
         word_count: row.get::<_, i64>(8).unwrap_or(0) as u64,
+        summary: row.get::<_, String>(9).unwrap_or_default(),
     })
+}
+
+pub fn save_summary(
+    history_dir: &Path,
+    id: &str,
+    title: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let conn = open_db(history_dir).map_err(|e| e.to_string())?;
+    let now = now_millis();
+    conn.execute(
+        "UPDATE meeting_notes SET title = ?1, summary = ?2, updated_at = ?3 WHERE id = ?4",
+        params![title, summary, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn now_millis() -> i64 {

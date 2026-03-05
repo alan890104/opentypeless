@@ -728,6 +728,10 @@ pub fn run() {
             commands::list_qwen3_asr_models,
             commands::switch_qwen3_asr_model,
             commands::download_qwen3_asr_model,
+            commands::delete_whisper_model,
+            commands::delete_polish_model,
+            commands::delete_qwen3_asr_model,
+            commands::delete_vad_model,
             commands::update_meeting_hotkey,
             commands::list_meeting_notes,
             commands::get_meeting_note,
@@ -735,6 +739,7 @@ pub fn run() {
             commands::delete_meeting_note,
             commands::delete_all_meeting_notes,
             commands::get_active_meeting_note_id,
+            commands::polish_meeting_note,
         ])
         .setup(|app| {
             // Initialize logger
@@ -1593,6 +1598,7 @@ fn start_meeting_mode(app: &AppHandle) {
             stt_model: model_label,
             is_recording: true,
             word_count: 0,
+            summary: String::new(),
         };
         if let Err(e) = meeting_notes::create_note(&settings::history_dir(), &note) {
             tracing::error!("Failed to create meeting note: {}", e);

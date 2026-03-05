@@ -111,6 +111,66 @@ pub fn filter_with_vad(
     Ok(speech_samples)
 }
 
+/// Check whether a 16 kHz audio chunk contains speech according to Silero VAD.
+///
+/// Returns `true` if at least one speech segment is detected.
+/// Falls back to RMS-based detection (`rms >= threshold`) if the VAD model is
+/// unavailable or cannot be loaded.
+pub fn has_speech_vad(
+    vad_cache: &Mutex<Option<VadContextCache>>,
+    samples_16k: &[f32],
+    rms_fallback_threshold: f32,
+) -> bool {
+    let model_path = vad_model_path();
+    if !model_path.exists() {
+        return crate::audio::rms(samples_16k) >= rms_fallback_threshold;
+    }
+
+    let mut cache_guard = match vad_cache.lock() {
+        Ok(g) => g,
+        Err(_) => return crate::audio::rms(samples_16k) >= rms_fallback_threshold,
+    };
+
+    // Lazy-init or reload if model path changed.
+    let needs_reload = match cache_guard.as_ref() {
+        Some(c) => c.model_path != model_path,
+        None => true,
+    };
+    if needs_reload {
+        let mut ctx_params = WhisperVadContextParams::new();
+        ctx_params.set_use_gpu(cfg!(target_os = "macos"));
+        ctx_params.set_n_threads(num_cpus() as _);
+        match WhisperVadContext::new(
+            model_path.to_str().unwrap_or(""),
+            ctx_params,
+        ) {
+            Ok(ctx) => {
+                *cache_guard = Some(VadContextCache {
+                    ctx,
+                    model_path: model_path.clone(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load VAD for speech detection: {:?}", e);
+                return crate::audio::rms(samples_16k) >= rms_fallback_threshold;
+            }
+        }
+    }
+
+    let cache = cache_guard.as_mut().expect("VAD context was just initialized");
+    // Use tight params for short-chunk speech detection.
+    let mut params = WhisperVadParams::default();
+    params.set_speech_pad(100);            // 100 ms padding
+    params.set_min_silence_duration(500);  // 500 ms min silence
+    match cache.ctx.segments_from_samples(params, samples_16k) {
+        Ok(segments) => segments.num_segments() > 0,
+        Err(e) => {
+            tracing::warn!("VAD speech detection failed: {:?}", e);
+            crate::audio::rms(samples_16k) >= rms_fallback_threshold
+        }
+    }
+}
+
 /// Resolve the path to a whisper GGML model file.
 /// Returns an error if the model hasn't been downloaded yet.
 pub fn whisper_model_path_for(model: &WhisperModel) -> Result<PathBuf, String> {

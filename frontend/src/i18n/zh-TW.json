@@ -368,5 +368,16 @@
   "meeting.noContent": "尚無逐字稿",
   "meeting.copyTranscript": "複製逐字稿",
   "meeting.copied": "已複製！",
-  "overlay.meetingStopped": "會議已儲存"
+  "meeting.polish": "產生摘要",
+  "meeting.polishing": "生成中…",
+  "meeting.tabTranscript": "逐字稿",
+  "meeting.tabSummary": "摘要",
+  "meeting.noSummaryYet": "尚無摘要，點擊按鈕以生成。",
+  "meeting.polishNotReady": "尚未設定 AI 潤飾，請先在設定中完成配置。",
+  "meeting.polishError": "摘要生成失敗",
+  "overlay.meetingStopped": "會議已儲存",
+  "model.delete": "刪除",
+  "model.deleteConfirm": "確定要刪除 {name} 嗎？將釋放 {size} 的磁碟空間。",
+  "model.deleteActiveWarning": "此模型目前正在使用中，刪除後將會卸載。",
+  "model.deleted": "已刪除，釋放了 {size}"
 }

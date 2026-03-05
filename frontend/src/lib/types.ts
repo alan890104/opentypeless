@@ -241,6 +241,12 @@ export interface MeetingNote {
   stt_model: string;
   is_recording: boolean;
   word_count: number;
+  summary: string;
+}
+
+export interface PolishedMeetingNote {
+  title: string;
+  summary: string;
 }
 
 // ── Pages ──

@@ -488,7 +488,7 @@ pub fn do_stop_recording(
             }
         },
         SttMode::Cloud => {
-            let result = crate::stt::run_cloud_stt(&stt_config.cloud, &samples_16k, &state.http_client)?;
+            let result = crate::stt::run_cloud_stt(&stt_config.cloud, &samples_16k, &state.http_client, None)?;
             tracing::info!("[timing] STT (cloud {}): {:.0?}", stt_config.cloud.provider.as_key(), stt_start.elapsed());
             result
         }

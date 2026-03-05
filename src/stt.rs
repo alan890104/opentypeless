@@ -340,7 +340,10 @@ pub fn locale_to_stt_language(locale: &str) -> String {
 }
 
 /// Transcribe audio via a cloud STT API.
-pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &reqwest::blocking::Client) -> Result<String, String> {
+///
+/// `prompt`: optional context text (e.g. previous transcript) for Groq/OpenAI
+/// compatible APIs. Ignored by Deepgram/Azure.
+pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &reqwest::blocking::Client, prompt: Option<&str>) -> Result<String, String> {
     if stt_cloud.api_key.is_empty() {
         return Err("Cloud STT API key is not set. Please configure it in Settings.".to_string());
     }
@@ -469,6 +472,12 @@ pub fn run_cloud_stt(stt_cloud: &SttCloudConfig, samples_16k: &[f32], client: &r
                 }
             }
 
+            if let Some(p) = prompt {
+                if !p.is_empty() {
+                    form = form.text("prompt", p.to_string());
+                }
+            }
+
             client
                 .post(&endpoint)
                 .header("Authorization", format!("Bearer {}", stt_cloud.api_key))
@@ -563,7 +572,7 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
     let mut chunk_buf: Vec<f32> = Vec::new(); // 16 kHz samples for current segment
     let mut silence_count: u32 = 0;
     let mut had_speech_since_reset = false;
-    const RMS_THRESHOLD: f32 = 0.003;
+    const RMS_FALLBACK: f32 = 0.003;
 
     // O(1) spacing state.
     let mut has_content = false;
@@ -620,33 +629,55 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
                 delta_raw
             };
 
-            let chunk_rms = crate::audio::rms(&delta_16k);
-            if chunk_rms < RMS_THRESHOLD {
-                if had_speech_since_reset {
-                    silence_count += 1;
-                }
-            } else {
+            // Use Silero VAD (falls back to RMS if model unavailable).
+            if crate::transcribe::has_speech_vad(&state.vad_ctx, &delta_16k, RMS_FALLBACK) {
                 silence_count = 0;
                 had_speech_since_reset = true;
+            } else if had_speech_since_reset {
+                silence_count += 1;
             }
 
             chunk_buf.extend_from_slice(&delta_16k);
         }
 
-        // Silence reset: ≥ 4 s of silence after speech → transcribe and reset chunk.
-        if silence_count >= 2 && had_speech_since_reset && !chunk_buf.is_empty() {
+        // Silence reset: ≥ 2 s of silence after speech → transcribe and reset chunk.
+        if silence_count >= 1 && had_speech_since_reset && !chunk_buf.is_empty() {
+            // Read previous text from WAL file for context prompt.
+            let prev_text = if let Some(ref id) = note_id {
+                let full = crate::meeting_notes::read_wal(&history_dir, id);
+                let trimmed = full.trim_end();
+                if trimmed.len() > 200 {
+                    trimmed[trimmed.len().saturating_sub(200)..].to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            } else {
+                String::new()
+            };
+            let prompt = if prev_text.is_empty() {
+                None
+            } else {
+                Some(prev_text.as_str())
+            };
+
+            // Filter chunk through VAD before sending to STT.
+            let stt_samples = crate::transcribe::filter_with_vad(&state.vad_ctx, &chunk_buf)
+                .unwrap_or_else(|_| chunk_buf.clone());
+
             let mut tick_delta = String::new();
-            match run_cloud_stt(&cloud_config, &chunk_buf, &state.http_client) {
-                Ok(seg_text) if !seg_text.is_empty() => {
-                    if has_content && !ends_with_space && !seg_text.starts_with(' ') {
-                        tick_delta.push(' ');
+            if !stt_samples.is_empty() {
+                match run_cloud_stt(&cloud_config, &stt_samples, &state.http_client, prompt) {
+                    Ok(seg_text) if !seg_text.is_empty() => {
+                        if has_content && !ends_with_space && !seg_text.starts_with(' ') {
+                            tick_delta.push(' ');
+                        }
+                        tick_delta.push_str(&seg_text);
                     }
-                    tick_delta.push_str(&seg_text);
+                    Err(e) => {
+                        tracing::warn!("[cloud-meeting] chunk transcription failed, skipping: {}", e);
+                    }
+                    _ => {}
                 }
-                Err(e) => {
-                    tracing::warn!("[cloud-meeting] chunk transcription failed, skipping: {}", e);
-                }
-                _ => {}
             }
 
             if (has_content || !tick_delta.is_empty()) && !tick_delta.ends_with(' ') {
@@ -701,21 +732,41 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
 
     // Flush remaining chunk.
     if !chunk_buf.is_empty() {
-        match run_cloud_stt(&cloud_config, &chunk_buf, &state.http_client) {
-            Ok(seg_text) if !seg_text.is_empty() => {
-                let mut final_delta = String::new();
-                if has_content && !ends_with_space && !seg_text.starts_with(' ') {
-                    final_delta.push(' ');
-                }
-                final_delta.push_str(&seg_text);
-                if let Some(ref id) = note_id {
-                    crate::meeting_notes::append_wal(&history_dir, id, &final_delta);
-                }
+        let prev_text = if let Some(ref id) = note_id {
+            let full = crate::meeting_notes::read_wal(&history_dir, id);
+            let trimmed = full.trim_end();
+            if trimmed.len() > 200 {
+                trimmed[trimmed.len().saturating_sub(200)..].to_string()
+            } else {
+                trimmed.to_string()
             }
-            Err(e) => {
-                tracing::warn!("[cloud-meeting] final chunk transcription failed: {}", e);
+        } else {
+            String::new()
+        };
+        let prompt = if prev_text.is_empty() {
+            None
+        } else {
+            Some(prev_text.as_str())
+        };
+        let stt_samples = crate::transcribe::filter_with_vad(&state.vad_ctx, &chunk_buf)
+            .unwrap_or_else(|_| chunk_buf.clone());
+        if !stt_samples.is_empty() {
+            match run_cloud_stt(&cloud_config, &stt_samples, &state.http_client, prompt) {
+                Ok(seg_text) if !seg_text.is_empty() => {
+                    let mut final_delta = String::new();
+                    if has_content && !ends_with_space && !seg_text.starts_with(' ') {
+                        final_delta.push(' ');
+                    }
+                    final_delta.push_str(&seg_text);
+                    if let Some(ref id) = note_id {
+                        crate::meeting_notes::append_wal(&history_dir, id, &final_delta);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("[cloud-meeting] final chunk transcription failed: {}", e);
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 

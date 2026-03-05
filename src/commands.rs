@@ -2363,6 +2363,135 @@ pub fn download_qwen3_asr_model(
     Ok(())
 }
 
+// ── Model deletion ─────────────────────────────────────────────────────────
+
+/// Guard helper: returns Err if recording, processing, downloading, or switching.
+fn guard_model_op(state: &AppState) -> Result<(), String> {
+    if state.is_recording.load(Ordering::SeqCst) || state.is_processing.load(Ordering::SeqCst) {
+        return Err("Cannot delete model while recording or processing".to_string());
+    }
+    if state.downloading.load(Ordering::SeqCst) {
+        return Err("Cannot delete model while a download is in progress".to_string());
+    }
+    if state.model_switching.load(Ordering::SeqCst) {
+        return Err("Cannot delete model while switching models".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_whisper_model(
+    state: State<'_, AppState>,
+    model: WhisperModel,
+) -> Result<u64, String> {
+    guard_model_op(&state)?;
+
+    let path = settings::models_dir().join(model.filename());
+    if !path.exists() {
+        return Err("Model file not found".to_string());
+    }
+
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    // Invalidate whisper cache if this model is currently loaded.
+    if let Ok(mut cache) = state.whisper_ctx.lock() {
+        if let Some(ref c) = *cache {
+            if c.loaded_path == path {
+                *cache = None;
+                tracing::info!("Whisper cache invalidated for deleted model");
+            }
+        }
+    }
+
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete model: {}", e))?;
+    tracing::info!("Deleted whisper model {:?}, freed {} bytes", model.display_name(), size);
+    Ok(size)
+}
+
+#[tauri::command]
+pub fn delete_polish_model(
+    state: State<'_, AppState>,
+    model: polisher::PolishModel,
+) -> Result<u64, String> {
+    guard_model_op(&state)?;
+
+    let dir = settings::models_dir();
+    let path = dir.join(model.filename());
+    if !path.exists() {
+        return Err("Model file not found".to_string());
+    }
+
+    let mut freed = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    // Invalidate LLM cache if this model is currently loaded.
+    polisher::invalidate_cache(&state.llm_model);
+
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete model: {}", e))?;
+
+    // Also remove companion tokenizer file if present.
+    if let Some(tok) = model.tokenizer_filename() {
+        let tok_path = dir.join(tok);
+        if tok_path.exists() {
+            freed += std::fs::metadata(&tok_path).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&tok_path);
+        }
+    }
+
+    tracing::info!("Deleted polish model {:?}, freed {} bytes", model.display_name(), freed);
+    Ok(freed)
+}
+
+#[tauri::command]
+pub fn delete_qwen3_asr_model(
+    state: State<'_, AppState>,
+    model: Qwen3AsrModel,
+) -> Result<u64, String> {
+    guard_model_op(&state)?;
+
+    let model_dir = crate::stt::qwen3_asr_model_dir(&model);
+    if !model_dir.exists() {
+        return Err("Model directory not found".to_string());
+    }
+
+    // Calculate total size before deletion.
+    let freed: u64 = model
+        .required_files()
+        .iter()
+        .filter_map(|f| std::fs::metadata(model_dir.join(f)).ok())
+        .map(|m| m.len())
+        .sum();
+
+    // Invalidate Qwen3-ASR cache.
+    qwen3::invalidate_qwen3_asr_cache(&state.qwen3_asr_ctx);
+
+    std::fs::remove_dir_all(&model_dir)
+        .map_err(|e| format!("Failed to delete model directory: {}", e))?;
+
+    tracing::info!("Deleted Qwen3-ASR model {:?}, freed {} bytes", model.display_name(), freed);
+    Ok(freed)
+}
+
+#[tauri::command]
+pub fn delete_vad_model(state: State<'_, AppState>) -> Result<u64, String> {
+    guard_model_op(&state)?;
+
+    let path = crate::transcribe::vad_model_path();
+    if !path.exists() {
+        return Err("VAD model not found".to_string());
+    }
+
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    // Invalidate VAD cache.
+    if let Ok(mut cache) = state.vad_ctx.lock() {
+        *cache = None;
+    }
+
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete VAD model: {}", e))?;
+    tracing::info!("Deleted VAD model, freed {} bytes", size);
+    Ok(size)
+}
+
 // ── Meeting Notes ──
 
 #[tauri::command]
@@ -2408,4 +2537,113 @@ pub fn get_active_meeting_note_id(state: State<'_, AppState>) -> Option<String> 
         .lock()
         .ok()
         .and_then(|nid| nid.clone())
+}
+
+#[derive(Serialize)]
+pub struct PolishedMeetingNote {
+    pub title: String,
+    pub summary: String,
+}
+
+#[tauri::command]
+pub async fn polish_meeting_note(
+    app: AppHandle,
+    id: String,
+) -> Result<PolishedMeetingNote, String> {
+    let history_dir = settings::history_dir();
+    let note = meeting_notes::get_note(&history_dir, &id)?;
+    if note.transcript.is_empty() {
+        return Err("Transcript is empty".to_string());
+    }
+
+    // Extract config and validate before spawning the blocking task.
+    let (config, model_dir) = {
+        let state = app.state::<AppState>();
+        let mut config = state
+            .settings
+            .lock()
+            .map_err(|e| e.to_string())?
+            .polish
+            .clone();
+
+        if config.mode == polisher::PolishMode::Cloud {
+            let key = get_cached_api_key(&state.api_key_cache, config.cloud.provider.as_key());
+            if !key.is_empty() {
+                config.cloud.api_key = key;
+            }
+        }
+
+        let model_dir = settings::models_dir();
+        if !polisher::is_polish_ready(&model_dir, &config) {
+            return Err("LLM not configured".to_string());
+        }
+        (config, model_dir)
+    };
+
+    let transcript = note.transcript.clone();
+    let fallback_title = note.title.clone();
+
+    // Run the heavy LLM inference on a blocking thread so the UI stays responsive.
+    let app_clone = app.clone();
+    let parsed = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_clone.state::<AppState>();
+
+        let system_prompt = r#"You are a meeting notes assistant. Given a raw speech-to-text transcript, generate:
+1. A concise, descriptive title (max 60 chars)
+2. An organized summary with: key discussion points (bullet "- "), action items, decisions
+
+Return ONLY a JSON object: {"title": "...", "summary": "..."}
+Use newlines and "- " bullets in the summary field.
+Write in the same language as the transcript."#;
+
+        let result = polisher::polish_with_prompt(
+            &state.llm_model,
+            &model_dir,
+            &config,
+            system_prompt,
+            &transcript,
+            &state.http_client,
+        )?;
+
+        Ok::<_, String>(parse_polish_json(&result, &fallback_title))
+    })
+    .await
+    .map_err(|e| format!("Polish task failed: {}", e))??;
+
+    meeting_notes::save_summary(&history_dir, &id, &parsed.title, &parsed.summary)?;
+
+    Ok(parsed)
+}
+
+fn parse_polish_json(raw: &str, fallback_title: &str) -> PolishedMeetingNote {
+    // Strip markdown code fences if present
+    let cleaned = raw
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| raw.trim().strip_prefix("```"))
+        .unwrap_or(raw.trim());
+    let cleaned = cleaned
+        .strip_suffix("```")
+        .unwrap_or(cleaned)
+        .trim();
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        let title = v
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or(fallback_title)
+            .to_string();
+        let summary = v
+            .get("summary")
+            .and_then(|s| s.as_str())
+            .unwrap_or(cleaned)
+            .to_string();
+        PolishedMeetingNote { title, summary }
+    } else {
+        // Fallback: use raw output as summary, keep existing title
+        PolishedMeetingNote {
+            title: fallback_title.to_string(),
+            summary: raw.trim().to_string(),
+        }
+    }
 }
