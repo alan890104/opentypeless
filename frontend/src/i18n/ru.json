@@ -359,6 +359,7 @@
   "meeting.recording": "Запись",
   "meeting.words": "слов",
   "meeting.noContent": "Транскрипция пока отсутствует",
+  "meeting.noSpeechDetected": "Речь не обнаружена",
   "meeting.copyTranscript": "Копировать транскрипцию",
   "meeting.copied": "Скопировано!",
   "overlay.meetingStopped": "Встреча сохранена"

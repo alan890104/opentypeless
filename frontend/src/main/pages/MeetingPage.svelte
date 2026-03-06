@@ -460,6 +460,8 @@
           {/if}
         {:else if selectedNote.transcript}
           <pre class="transcript-text">{selectedNote.transcript}</pre>
+        {:else if selectedNote.is_recording}
+          <p class="no-content">{t('meeting.noSpeechDetected')}</p>
         {:else}
           <p class="no-content">{t('meeting.noContent')}</p>
         {/if}

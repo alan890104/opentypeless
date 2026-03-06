@@ -359,6 +359,7 @@
   "meeting.recording": "録音中",
   "meeting.words": "語",
   "meeting.noContent": "文字起こしはまだありません",
+  "meeting.noSpeechDetected": "音声が検出されませんでした",
   "meeting.copyTranscript": "文字起こしをコピー",
   "meeting.copied": "コピーしました！",
   "overlay.meetingStopped": "会議を保存しました"

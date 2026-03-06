@@ -359,6 +359,7 @@
   "meeting.recording": "녹음 중",
   "meeting.words": "단어",
   "meeting.noContent": "아직 전사 내용이 없습니다",
+  "meeting.noSpeechDetected": "음성이 감지되지 않았습니다",
   "meeting.copyTranscript": "전사 복사",
   "meeting.copied": "복사됨!",
   "overlay.meetingStopped": "회의 저장됨"

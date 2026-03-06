@@ -366,6 +366,7 @@
   "meeting.recording": "录音中",
   "meeting.words": "字",
   "meeting.noContent": "暂无转录内容",
+  "meeting.noSpeechDetected": "未检测到语音",
   "meeting.copyTranscript": "复制转录内容",
   "meeting.copied": "已复制！",
   "meeting.polish": "生成摘要",

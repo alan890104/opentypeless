@@ -359,6 +359,7 @@
   "meeting.recording": "Aufnahme",
   "meeting.words": "Wörter",
   "meeting.noContent": "Noch kein Transkript",
+  "meeting.noSpeechDetected": "Keine Sprache erkannt",
   "meeting.copyTranscript": "Transkript kopieren",
   "meeting.copied": "Kopiert!",
   "overlay.meetingStopped": "Meeting gespeichert"

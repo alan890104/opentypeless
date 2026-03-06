@@ -366,6 +366,7 @@
   "meeting.recording": "錄音中",
   "meeting.words": "字",
   "meeting.noContent": "尚無逐字稿",
+  "meeting.noSpeechDetected": "未偵測到語音",
   "meeting.copyTranscript": "複製逐字稿",
   "meeting.copy": "複製",
   "meeting.copied": "已複製！",

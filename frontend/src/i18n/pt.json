@@ -359,6 +359,7 @@
   "meeting.recording": "Gravando",
   "meeting.words": "palavras",
   "meeting.noContent": "Sem transcrição ainda",
+  "meeting.noSpeechDetected": "Nenhuma fala detectada",
   "meeting.copyTranscript": "Copiar transcrição",
   "meeting.copied": "Copiado!",
   "overlay.meetingStopped": "Reunião salva"

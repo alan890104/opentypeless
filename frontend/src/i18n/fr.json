@@ -359,6 +359,7 @@
   "meeting.recording": "Enregistrement",
   "meeting.words": "mots",
   "meeting.noContent": "Pas encore de transcription",
+  "meeting.noSpeechDetected": "Aucune parole détectée",
   "meeting.copyTranscript": "Copier la transcription",
   "meeting.copied": "Copié !",
   "overlay.meetingStopped": "Réunion enregistrée"
