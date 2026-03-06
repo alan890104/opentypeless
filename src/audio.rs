@@ -251,7 +251,27 @@ pub fn try_reconnect_audio(
     Ok(())
 }
 
-/// Start recording — truly instant because the audio stream is always running.
+/// Close the audio input stream (on-demand model).
+///
+/// Setting `mic_available=false` causes `do_start_recording` to reopen the
+/// stream via `try_reconnect_audio` on the next hotkey press.  The caller
+/// shows the overlay in the `preparing` state before calling
+/// `do_start_recording` so the user sees visual feedback during the ~70 ms
+/// CoreAudio re-initialization.
+pub fn close_audio_stream(
+    audio_thread: &Mutex<Option<AudioThreadControl>>,
+    mic_available: &AtomicBool,
+) {
+    if let Ok(mut at) = audio_thread.lock() {
+        if let Some(ctrl) = at.take() {
+            ctrl.stop();
+        }
+    }
+    mic_available.store(false, Ordering::SeqCst);
+    tracing::info!("Mic stream closed (on-demand)");
+}
+
+/// Start recording — opens the mic stream if not already running (on-demand model).
 pub fn do_start_recording(
     is_recording: &AtomicBool,
     mic_available: &AtomicBool,
@@ -322,7 +342,6 @@ pub fn do_stop_recording(
     state: &crate::AppState,
     stt_config: &SttConfig,
     language: &str,
-    app_name: &str,
     dictionary_terms: &[String],
 ) -> Result<(String, Vec<f32>), String> {
     let sample_rate = state.sample_rate
@@ -436,7 +455,7 @@ pub fn do_stop_recording(
     let text = match stt_config.mode {
         SttMode::Local => match stt_config.local_engine {
             LocalSttEngine::Whisper => {
-                let result = transcribe_with_cached_whisper(&state.whisper_ctx, &samples_16k, &stt_config.whisper_model, language, app_name, dictionary_terms)?;
+                let result = transcribe_with_cached_whisper(&state.whisper_ctx, &samples_16k, &stt_config.whisper_model, language, dictionary_terms)?;
                 tracing::info!("[timing] STT (local whisper): {:.0?}", stt_start.elapsed());
                 result
             }

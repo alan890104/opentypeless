@@ -11,7 +11,7 @@ use crate::{history, meeting_notes, AppState};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -622,29 +622,34 @@ pub async fn test_polish(
     };
 
     let model_dir = settings::models_dir();
-    let default_system_prompt = polisher::resolve_prompt(&polisher::base_prompt_template());
-    let custom_system_prompt = polisher::resolve_prompt(&custom_prompt);
+    let default_instructions = polisher::resolve_prompt(&polisher::base_prompt_template());
+    let custom_instructions = polisher::resolve_prompt(&custom_prompt);
 
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_clone.state::<AppState>();
+        let system_prompt = "You are a speech-to-text post-processor.";
 
+        let default_user = format!("<speech>\n{}\n</speech>\n\n{}", test_text, default_instructions);
         let default_result = polisher::polish_with_prompt(
             &state.llm_model,
             &model_dir,
             &config,
-            &default_system_prompt,
-            &test_text,
+            system_prompt,
+            &default_user,
             &state.http_client,
+            None,
         )?;
 
+        let custom_user = format!("<speech>\n{}\n</speech>\n\n{}", test_text, custom_instructions);
         let custom_result = polisher::polish_with_prompt(
             &state.llm_model,
             &model_dir,
             &config,
-            &custom_system_prompt,
-            &test_text,
+            system_prompt,
+            &custom_user,
             &state.http_client,
+            None,
         )?;
 
         Ok(TestPolishResult {
@@ -755,30 +760,32 @@ pub async fn generate_rule_from_description(
         let state = app_clone.state::<AppState>();
 
         let lang_hint = "the same language the user uses";
-        let system_prompt = format!(
-            r#"You are a JSON generator. The user will describe a prompt rule for a speech-to-text app. Your job is to convert the description into a structured JSON object.
+        let system_prompt = "You are a JSON generator.";
+        let user_text = format!(
+            r#"{description}
 
-Return ONLY a single JSON object with these fields:
-- "name": a short descriptive name for the rule (max 30 chars)
+Convert the description above into a JSON object with these fields:
+- "name": short descriptive name (max 30 chars)
 - "match_type": one of "app_name", "bundle_id", or "url"
-- "match_value": the value to match against (e.g. app name, bundle ID, or URL pattern)
-- "prompt": the detailed instruction for AI polishing when this rule matches
+- "match_value": the value to match (e.g. app name, bundle ID, or URL pattern)
+- "prompt": detailed instruction for AI polishing when this rule matches
 
-If the user mentions a specific app, use "app_name" as match_type and the app name as match_value.
-If the user mentions a website or URL, use "url" as match_type.
-If you cannot determine the match target, leave match_value empty and use "app_name".
+If a specific app is mentioned, use "app_name" as match_type.
+If a website or URL is mentioned, use "url" as match_type.
+If the match target is unclear, use "app_name" with empty match_value.
 
-Write the "name" and "prompt" fields in {lang_hint}.
-Do NOT include any explanation, only the JSON object."#
+Write "name" and "prompt" in {lang_hint}.
+Return ONLY the JSON object."#
         );
 
         let result = polisher::polish_with_prompt(
             &state.llm_model,
             &model_dir,
             &config,
-            &system_prompt,
-            &description,
+            system_prompt,
+            &user_text,
             &state.http_client,
+            None,
         )?;
 
         parse_generated_rule(&result)
@@ -837,7 +844,6 @@ pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         &state,
         &stt_config,
         &stt_language,
-        "",
         &dictionary_terms,
     )
     .map(|(text, _samples)| text)
@@ -889,6 +895,10 @@ pub fn cancel_recording(app: AppHandle, state: State<'_, AppState>) {
     state.is_recording.store(false, Ordering::SeqCst);
     // Wake any sleeping feeder immediately.
     state.feeder_stop_cv.notify_all();
+    // Resume music if we paused it when recording started.
+    if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+        crate::platform::resume_now_playing();
+    }
     if let Some(overlay) = app.get_webview_window("overlay") {
         platform::hide_overlay(&overlay);
     }
@@ -902,7 +912,7 @@ pub struct MicStatus {
 }
 
 #[tauri::command]
-pub fn get_mic_status(state: State<'_, AppState>) -> MicStatus {
+pub fn get_mic_status(_state: State<'_, AppState>) -> MicStatus {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     let default_device = host.default_input_device().and_then(|d| d.name().ok());
@@ -922,21 +932,9 @@ pub fn get_mic_status(state: State<'_, AppState>) -> MicStatus {
             .unwrap_or_default()
     };
 
-    // Auto-reconnect: if mic was unavailable at startup but devices exist now, try to connect.
-    let mut connected = state.mic_available.load(Ordering::SeqCst);
-    if !connected && !devices.is_empty() {
-        let device_name = state.settings.lock().ok().and_then(|s| s.mic_device.clone());
-        if audio::try_reconnect_audio(
-            &state.mic_available,
-            &state.sample_rate,
-            &state.buffer,
-            &state.is_recording,
-            &state.audio_thread,
-            device_name,
-        ).is_ok() {
-            connected = true;
-        }
-    }
+    // On-demand model: stream is closed between recordings.
+    // Report physical device availability, not stream state.
+    let connected = !devices.is_empty() || default_device.is_some();
 
     MicStatus {
         connected,
@@ -958,31 +956,13 @@ pub fn set_mic_device(device_name: Option<String>, state: State<'_, AppState>) -
         settings::save_settings_to_disk(&settings);
     }
 
-    // Stop the old audio thread
-    if let Ok(mut at) = state.audio_thread.lock() {
-        if let Some(control) = at.take() {
-            control.stop();
-        }
-    }
-
-    // Clear the buffer to avoid leftover samples from the old device
+    // Close the old stream (if any) and clear the buffer.
+    // On-demand model: the new device will be used on the next recording start.
+    audio::close_audio_stream(&state.audio_thread, &state.mic_available);
     if let Ok(mut buf) = state.buffer.lock() {
         buf.clear();
     }
-
-    // Start a new audio thread with the selected device
-    state.mic_available.store(false, Ordering::SeqCst);
-    match audio::spawn_audio_thread(Arc::clone(&state.buffer), Arc::clone(&state.is_recording), device_name) {
-        Ok((sr, control)) => {
-            *state.sample_rate.lock().map_err(|e| e.to_string())? = Some(sr);
-            if let Ok(mut at) = state.audio_thread.lock() {
-                *at = Some(control);
-            }
-            state.mic_available.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
+    Ok(())
 }
 
 // ── Model download ──────────────────────────────────────────────────────────
@@ -2635,33 +2615,28 @@ pub async fn polish_meeting_note(
         let state = app_clone.state::<AppState>();
 
         let lang_name = language_display_name(&stt_language);
-        let system_prompt = format!(
-            r#"You are a meeting notes assistant. Given a raw speech-to-text transcript, generate:
-1. A concise, descriptive title (max 60 chars)
-2. A well-structured Markdown summary with these sections:
+        let system_prompt = "You are a meeting notes assistant.";
+        let user_text = format!(
+            r#"<transcript>
+{transcript}
+</transcript>
 
-## Key Points
-- Main discussion topics and highlights
+Summarize the transcript above. Generate:
+1. A concise title (max 60 chars)
+2. A Markdown summary with sections: Key Points, Action Items, Decisions. Omit empty sections.
 
-## Action Items
-- Specific tasks, owners if mentioned
-
-## Decisions
-- What was agreed upon or decided
-
-Omit any section that has no relevant content.
 Return ONLY a JSON object: {{"title": "...", "summary": "..."}}
-The summary field must contain valid Markdown.
-Write entirely in {lang_name}."#
+Write in {lang_name}."#
         );
 
         let result = polisher::polish_with_prompt(
             &state.llm_model,
             &model_dir,
             &config,
-            &system_prompt,
-            &transcript,
+            system_prompt,
+            &user_text,
             &state.http_client,
+            Some(4096),
         )?;
 
         Ok::<_, String>(parse_polish_json(&result, &fallback_title))
@@ -2741,5 +2716,74 @@ fn parse_polish_json(raw: &str, fallback_title: &str) -> PolishedMeetingNote {
             title: fallback_title.to_string(),
             summary: raw.trim().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_polish_json_valid() {
+        let raw = r#"{"title": "Meeting Title", "summary": "Key Points"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Meeting Title");
+        assert_eq!(result.summary, "Key Points");
+    }
+
+    #[test]
+    fn parse_polish_json_code_fence() {
+        let raw = "```json\n{\"title\": \"Fenced\", \"summary\": \"Content\"}\n```";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fenced");
+        assert_eq!(result.summary, "Content");
+    }
+
+    #[test]
+    fn parse_polish_json_bare_code_fence() {
+        let raw = "```\n{\"title\": \"Bare\", \"summary\": \"Content\"}\n```";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Bare");
+        assert_eq!(result.summary, "Content");
+    }
+
+    #[test]
+    fn parse_polish_json_invalid_falls_back() {
+        let raw = "This is not JSON at all";
+        let result = parse_polish_json(raw, "My Fallback Title");
+        assert_eq!(result.title, "My Fallback Title");
+        assert_eq!(result.summary, "This is not JSON at all");
+    }
+
+    #[test]
+    fn parse_polish_json_truncated_falls_back() {
+        let raw = "{\"title\": \"Truncated\", \"summary\": \"## Key Points";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fallback");
+        assert_eq!(result.summary, raw.trim());
+    }
+
+    #[test]
+    fn parse_polish_json_missing_title_uses_fallback() {
+        let raw = r#"{"summary": "Only a summary"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fallback");
+        assert_eq!(result.summary, "Only a summary");
+    }
+
+    #[test]
+    fn parse_polish_json_missing_summary_uses_raw() {
+        let raw = r#"{"title": "Only a title"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Only a title");
+        assert_eq!(result.summary, raw);
+    }
+
+    #[test]
+    fn parse_polish_json_whitespace_trimmed() {
+        let raw = "  \n  {\"title\": \"Trimmed\", \"summary\": \"Content\"}  \n  ";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Trimmed");
+        assert_eq!(result.summary, "Content");
     }
 }

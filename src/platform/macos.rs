@@ -261,6 +261,184 @@ pub unsafe fn nsstring_to_string(nsstr: *mut c_void) -> String {
         .to_string()
 }
 
+/// Returns `true` if any media is **actively playing** system-wide.
+///
+/// Uses `MRMediaRemoteGetNowPlayingApplicationIsPlaying` from the MediaRemote
+/// private framework — the same API the Control Centre uses.  Works for every
+/// player (Apple Music, Spotify, YouTube Music in Chrome, etc.).
+///
+/// Falls back to `false` (safe: don't send key) if the framework is missing
+/// or the call times out after 300 ms.
+pub fn is_now_playing() -> bool {
+    // Symbols from libdispatch (part of libSystem, always available on macOS).
+    extern "C" {
+        fn dispatch_semaphore_create(value: i64) -> *mut c_void;
+        fn dispatch_semaphore_signal(dsema: *mut c_void) -> i64;
+        fn dispatch_semaphore_wait(dsema: *mut c_void, timeout: u64) -> i64;
+        fn dispatch_get_global_queue(identifier: i64, flags: usize) -> *mut c_void;
+        fn dispatch_time(when: u64, delta: i64) -> u64;
+        fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        // Objective-C block ISA for stack-allocated blocks.
+        static _NSConcreteStackBlock: u8;
+    }
+
+    // Objective-C block layout for `^(BOOL playing)`.
+    #[repr(C)]
+    struct BlockDesc { reserved: u64, size: u64 }
+    #[repr(C)]
+    struct Block {
+        isa: *const u8,
+        flags: i32,
+        reserved: i32,
+        invoke: unsafe extern "C" fn(*mut Block, u8),
+        descriptor: *const BlockDesc,
+        // Captured variables
+        out: *mut u8,
+        sema: *mut c_void,
+    }
+
+    static DESC: BlockDesc = BlockDesc {
+        reserved: 0,
+        size: std::mem::size_of::<Block>() as u64,
+    };
+
+    unsafe extern "C" fn invoke(b: *mut Block, playing: u8) {
+        *(*b).out = playing;
+        dispatch_semaphore_signal((*b).sema);
+    }
+
+    unsafe {
+        let handle = dlopen(
+            c"/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote".as_ptr(),
+            1, // RTLD_LAZY
+        );
+        if handle.is_null() { return false; }
+
+        let sym = dlsym(handle, c"MRMediaRemoteGetNowPlayingApplicationIsPlaying".as_ptr());
+        if sym.is_null() { return false; }
+
+        type GetPlayingFn = unsafe extern "C" fn(*mut c_void, *mut Block);
+        let get_playing: GetPlayingFn = std::mem::transmute(sym);
+
+        let sema = dispatch_semaphore_create(0);
+
+        // Heap-allocate `result` so the captured pointer stays valid even if
+        // the 300 ms deadline fires before the GCD callback does.
+        // `MRMediaRemoteGetNowPlayingApplicationIsPlaying` copies the block to
+        // the heap (standard GCD contract), but `out` inside the copied block
+        // still points to the original allocation — it must be heap-stable.
+        let result: *mut u8 = Box::into_raw(Box::new(0u8));
+
+        let mut block = Block {
+            isa: &_NSConcreteStackBlock,
+            flags: 0,
+            reserved: 0,
+            invoke,
+            descriptor: &DESC,
+            out: result,
+            sema,
+        };
+
+        let queue = dispatch_get_global_queue(0, 0);
+        get_playing(queue, &mut block);
+
+        // Wait up to 300 ms; if callback never fires assume nothing is playing.
+        let deadline = dispatch_time(0 /* DISPATCH_TIME_NOW */, 300_000_000);
+        let timed_out = dispatch_semaphore_wait(sema, deadline) != 0;
+
+        if timed_out {
+            // Callback may still fire later; leak the 1-byte allocation so the
+            // write is safe. This path is hit only when the framework is frozen,
+            // which is extremely rare in practice.
+            false
+        } else {
+            let val = *result;
+            drop(Box::from_raw(result));
+            val != 0
+        }
+    }
+}
+
+/// Simulate the Play/Pause media key (NX_KEYTYPE_PLAY = 16).
+///
+/// Works with all players that honour system media keys: Apple Music, Spotify,
+/// YouTube Music in Chrome/Safari, etc.  Sends key-down + key-up via
+/// `NSEvent otherEventWithType:NSEventTypeSystemDefined`.
+pub fn simulate_media_play_pause() {
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSPoint { x: f64, y: f64 }
+
+    const NX_KEYTYPE_PLAY: i64 = 16;
+    const NS_EVENT_TYPE_SYSTEM_DEFINED: u64 = 14;
+    const NX_SUBTYPE_AUX_CONTROL_BUTTONS: i16 = 8;
+
+    // NSEvent +otherEventWithType:location:modifierFlags:timestamp:
+    //         windowNumber:context:subtype:data1:data2:
+    type MakeEventFn = unsafe extern "C" fn(
+        *mut c_void,  // class
+        *mut c_void,  // selector
+        u64,          // NSEventType
+        NSPoint,      // location  (HFA on ARM64: passed in d0/d1)
+        u64,          // modifierFlags
+        f64,          // timestamp
+        i64,          // windowNumber
+        *mut c_void,  // context (NSGraphicsContext*, nil)
+        i16,          // subtype
+        i64,          // data1
+        i64,          // data2
+    ) -> *mut c_void;
+
+    type GetCgEventFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+
+    unsafe {
+        let ns_event_class = objc_getClass(c"NSEvent".as_ptr());
+        if ns_event_class.is_null() {
+            tracing::warn!("simulate_media_play_pause: NSEvent class not found");
+            return;
+        }
+
+        let sel_make = sel_registerName(
+            c"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:".as_ptr(),
+        );
+        let sel_cg = sel_registerName(c"CGEvent".as_ptr());
+
+        let make_event: MakeEventFn = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        let get_cg: GetCgEventFn = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+
+        let zero = NSPoint { x: 0.0, y: 0.0 };
+
+        // key-down  (NX_KEYDOWN = 0x0a → flags byte in data1)
+        let ev_down = make_event(
+            ns_event_class, sel_make,
+            NS_EVENT_TYPE_SYSTEM_DEFINED, zero,
+            0, 0.0, 0, std::ptr::null_mut(),
+            NX_SUBTYPE_AUX_CONTROL_BUTTONS,
+            (NX_KEYTYPE_PLAY << 16) | 0x0a00,
+            -1,
+        );
+        if !ev_down.is_null() {
+            let cg = get_cg(ev_down, sel_cg);
+            if !cg.is_null() { CGEventPost(0 /* kCGHIDEventTap */, cg); }
+        }
+
+        // key-up  (NX_KEYUP = 0x0b, released-bit 0x01)
+        let ev_up = make_event(
+            ns_event_class, sel_make,
+            NS_EVENT_TYPE_SYSTEM_DEFINED, zero,
+            0, 0.0, 0, std::ptr::null_mut(),
+            NX_SUBTYPE_AUX_CONTROL_BUTTONS,
+            (NX_KEYTYPE_PLAY << 16) | 0x0b01,
+            -1,
+        );
+        if !ev_up.is_null() {
+            let cg = get_cg(ev_up, sel_cg);
+            if !cg.is_null() { CGEventPost(0, cg); }
+        }
+    }
+}
+
 /// Simulate Cmd+V (paste).
 ///
 /// # Safety

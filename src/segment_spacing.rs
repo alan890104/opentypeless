@@ -12,56 +12,47 @@
 /// Tracks inter-segment spacing state.  O(1) memory.
 pub(crate) struct SpacingState {
     pub has_content: bool,
-    pub ends_with_space: bool,
 }
 
 impl SpacingState {
     pub fn new() -> Self {
         Self {
             has_content: false,
-            ends_with_space: false,
         }
     }
 
-    /// Build a tick delta (mid-recording): includes trailing space so the next
-    /// segment doesn't fuse with this one.
+    /// Build a tick delta (mid-recording): each segment is separated by a
+    /// newline so the transcript is readable (one utterance per line).
     ///
     /// Returns the delta string to append to the WAL file.
-    /// Returns an empty string if `seg_text` is empty and no content has been
-    /// produced yet.
+    /// Returns an empty string if `seg_text` is empty.
     pub fn build_tick_delta(&mut self, seg_text: &str) -> String {
+        let trimmed = seg_text.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
         let mut delta = String::new();
-        if !seg_text.is_empty() {
-            if self.has_content && !self.ends_with_space && !seg_text.starts_with(' ') {
-                delta.push(' ');
-            }
-            delta.push_str(seg_text);
+        if self.has_content {
+            delta.push('\n');
         }
-
-        // Add trailing space so the next segment does not fuse with this one,
-        // but only when this tick actually produced text.
-        if !delta.is_empty() && !delta.ends_with(' ') {
-            delta.push(' ');
-        }
-
-        if !delta.is_empty() {
-            self.ends_with_space = delta.ends_with(' ');
-            self.has_content = true;
-        }
+        delta.push_str(trimmed);
+        self.has_content = true;
         delta
     }
 
-    /// Build a final delta (post-loop, last segment): no trailing space added.
+    /// Build a final delta (post-loop, last segment).
     ///
     /// Returns the delta string for the final segment.
     pub fn build_final_delta(&self, seg_text: &str) -> String {
-        let mut delta = String::new();
-        if !seg_text.is_empty() {
-            if self.has_content && !self.ends_with_space && !seg_text.starts_with(' ') {
-                delta.push(' ');
-            }
-            delta.push_str(seg_text);
+        let trimmed = seg_text.trim();
+        if trimmed.is_empty() {
+            return String::new();
         }
+        let mut delta = String::new();
+        if self.has_content {
+            delta.push('\n');
+        }
+        delta.push_str(trimmed);
         delta
     }
 }
@@ -73,38 +64,28 @@ mod tests {
     // ── Tick deltas (mid-recording) ──
 
     #[test]
-    fn first_segment_gets_trailing_space() {
+    fn first_segment_no_leading_newline() {
         let mut s = SpacingState::new();
         let d = s.build_tick_delta("hello");
-        assert_eq!(d, "hello ");
+        assert_eq!(d, "hello");
         assert!(s.has_content);
-        assert!(s.ends_with_space);
     }
 
     #[test]
-    fn second_segment_adds_leading_space_if_needed() {
+    fn second_segment_separated_by_newline() {
         let mut s = SpacingState::new();
         s.build_tick_delta("hello");
-        // Previous delta ended with space, so no extra space before "world"
         let d = s.build_tick_delta("world");
-        assert_eq!(d, "world ");
+        assert_eq!(d, "\nworld");
     }
 
     #[test]
-    fn no_double_space_when_segment_starts_with_space() {
+    fn segment_with_whitespace_is_trimmed() {
         let mut s = SpacingState::new();
-        s.build_tick_delta("hello");
-        let d = s.build_tick_delta(" world");
-        // Should not produce "  world "
-        assert_eq!(d, " world ");
-    }
-
-    #[test]
-    fn no_double_space_when_segment_ends_with_space() {
-        let mut s = SpacingState::new();
-        let d = s.build_tick_delta("hello ");
-        // "hello " already ends with space, no extra trailing space
-        assert_eq!(d, "hello ");
+        let d = s.build_tick_delta("  hello  ");
+        assert_eq!(d, "hello");
+        let d = s.build_tick_delta(" world ");
+        assert_eq!(d, "\nworld");
     }
 
     #[test]
@@ -120,50 +101,51 @@ mod tests {
         let mut s = SpacingState::new();
         s.build_tick_delta("hello");
         let d = s.build_tick_delta("");
-        // Empty segment should produce nothing — no stray spaces in WAL.
         assert_eq!(d, "");
     }
 
     #[test]
-    fn chinese_segments_no_space_fusion() {
+    fn whitespace_only_segment_produces_nothing() {
         let mut s = SpacingState::new();
-        s.build_tick_delta("你好");
-        let d = s.build_tick_delta("世界");
-        // Previous ended with space, "世界" doesn't start with space
-        // → no leading space needed (trailing space from prev tick separates them)
-        assert_eq!(d, "世界 ");
+        s.build_tick_delta("hello");
+        let d = s.build_tick_delta("   ");
+        assert_eq!(d, "");
     }
 
     #[test]
-    fn many_segments_accumulate_correctly() {
+    fn chinese_segments_separated_by_newline() {
+        let mut s = SpacingState::new();
+        s.build_tick_delta("你好");
+        let d = s.build_tick_delta("世界");
+        assert_eq!(d, "\n世界");
+    }
+
+    #[test]
+    fn many_segments_one_per_line() {
         let mut s = SpacingState::new();
         let mut transcript = String::new();
         for seg in &["Hello", "world", "how", "are", "you"] {
             let d = s.build_tick_delta(seg);
             transcript.push_str(&d);
         }
-        assert_eq!(transcript, "Hello world how are you ");
+        assert_eq!(transcript, "Hello\nworld\nhow\nare\nyou");
     }
 
     // ── Final delta (post-loop) ──
 
     #[test]
-    fn final_delta_no_trailing_space() {
+    fn final_delta_separated_by_newline() {
         let mut s = SpacingState::new();
         s.build_tick_delta("hello");
         let d = s.build_final_delta("world");
-        // Previous ended with space, so no leading space; no trailing space added
-        assert_eq!(d, "world");
+        assert_eq!(d, "\nworld");
     }
 
     #[test]
-    fn final_delta_adds_leading_space_when_previous_didnt_end_with_space() {
-        let mut s = SpacingState::new();
-        // Simulate a state where previous content exists but no trailing space
-        s.has_content = true;
-        s.ends_with_space = false;
-        let d = s.build_final_delta("world");
-        assert_eq!(d, " world");
+    fn final_delta_first_segment() {
+        let s = SpacingState::new();
+        let d = s.build_final_delta("hello");
+        assert_eq!(d, "hello");
     }
 
     #[test]
@@ -181,18 +163,14 @@ mod tests {
         let mut s = SpacingState::new();
         let mut transcript = String::new();
 
-        // Tick 1: model returns "Good morning"
-        transcript.push_str(&s.build_tick_delta("Good morning"));
-        // Tick 2: model returns "everyone."
-        transcript.push_str(&s.build_tick_delta("everyone."));
-        // Tick 3: model returns "Let's begin."
-        transcript.push_str(&s.build_tick_delta("Let's begin."));
-        // Post-loop: final segment "Thank you"
-        transcript.push_str(&s.build_final_delta("Thank you"));
+        transcript.push_str(&s.build_tick_delta("Good morning everyone."));
+        transcript.push_str(&s.build_tick_delta("Let's begin the meeting."));
+        transcript.push_str(&s.build_tick_delta("First topic is the budget."));
+        transcript.push_str(&s.build_final_delta("Thank you all."));
 
         assert_eq!(
             transcript,
-            "Good morning everyone. Let's begin. Thank you"
+            "Good morning everyone.\nLet's begin the meeting.\nFirst topic is the budget.\nThank you all."
         );
     }
 
@@ -201,13 +179,10 @@ mod tests {
         let mut s = SpacingState::new();
         let mut transcript = String::new();
 
-        // Tick 1: speech
-        transcript.push_str(&s.build_tick_delta("Hello"));
-        // Tick 2: silence (empty) — should produce nothing
+        transcript.push_str(&s.build_tick_delta("Hello everyone."));
         transcript.push_str(&s.build_tick_delta(""));
-        // Tick 3: speech resumes — previous ended with space, no extra needed
-        transcript.push_str(&s.build_tick_delta("world"));
+        transcript.push_str(&s.build_tick_delta("Let's continue."));
 
-        assert_eq!(transcript, "Hello world ");
+        assert_eq!(transcript, "Hello everyone.\nLet's continue.");
     }
 }

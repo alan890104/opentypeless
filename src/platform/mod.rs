@@ -107,6 +107,28 @@ pub fn simulate_undo() -> bool {
     { false }
 }
 
+/// Returns `true` if any media is actively playing system-wide.
+/// Used to guard the play/pause key — avoids launching Apple Music when idle.
+pub fn is_now_playing() -> bool {
+    #[cfg(target_os = "macos")]
+    { macos::is_now_playing() }
+    #[cfg(not(target_os = "macos"))]
+    { false }
+}
+
+/// Send the Play/Pause media key to pause currently playing media.
+/// Call `resume_now_playing` when done to restore playback.
+pub fn pause_now_playing() {
+    #[cfg(target_os = "macos")]
+    macos::simulate_media_play_pause();
+}
+
+/// Send the Play/Pause media key to resume media paused by `pause_now_playing`.
+pub fn resume_now_playing() {
+    #[cfg(target_os = "macos")]
+    macos::simulate_media_play_pause();
+}
+
 /// Returns the clipboard change sequence number if the platform supports it.
 /// macOS: NSPasteboard.changeCount, Windows: GetClipboardSequenceNumber.
 /// Returns None on Linux/other (caller falls back to sentinel approach).

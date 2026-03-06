@@ -236,7 +236,6 @@ pub fn transcribe_with_cached_whisper(
     samples_16k: &[f32],
     model: &WhisperModel,
     language: &str,
-    app_name: &str,
     dictionary_terms: &[String],
 ) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy};
@@ -301,61 +300,45 @@ pub fn transcribe_with_cached_whisper(
     };
     params.set_language(lang_hint);
 
-    // Build initial prompt for context — use the target language so Whisper
-    // is biased toward the correct script/variant.
-    // When language is "auto", skip prompt to let Whisper decide freely.
-    let mut prompt_parts: Vec<String> = vec!["Sumi".to_string()];
+    // Build initial prompt for Whisper token biasing.
+    //
+    // Whisper treats initial_prompt as "previous transcription output", NOT as
+    // instructions.  We use it for two purposes:
+    //
+    // 1. Script anchor — a short phrase in the target script so Whisper is
+    //    biased toward the correct writing system (critical for CJK where
+    //    set_language alone is insufficient to distinguish e.g. 繁體 vs 简体).
+    //    When language is "auto", omit the anchor to let Whisper decide freely.
+    //
+    // 2. Dictionary terms — proper nouns the user wants recognized correctly.
+    //    Placed at the tail where token bias is strongest.
+    let mut prompt_parts: Vec<String> = Vec::new();
+
+    // Script anchor: a short target-script phrase for CJK languages.
+    // Only needed where multiple scripts share characters (CJK);
+    // other non-Latin scripts (Arabic, Thai, Cyrillic…) are unambiguous
+    // and set_language() alone is sufficient.
     match language {
-        "zh-TW" | "zh" => {
-            if !app_name.is_empty() {
-                prompt_parts.push(format!("用戶正在使用{}。", app_name));
-            }
-            prompt_parts.push("以下是繁體中文的語音轉錄。".to_string());
-        }
-        "zh-CN" => {
-            if !app_name.is_empty() {
-                prompt_parts.push(format!("用户正在使用{}。", app_name));
-            }
-            prompt_parts.push("以下是简体中文的语音转录。".to_string());
-        }
-        "ja" => {
-            if !app_name.is_empty() {
-                prompt_parts.push(format!("ユーザーは{}を使用中。", app_name));
-            }
-            prompt_parts.push("以下は日本語の音声書き起こしです。".to_string());
-        }
-        "ko" => {
-            if !app_name.is_empty() {
-                prompt_parts.push(format!("사용자가 {}을(를) 사용 중.", app_name));
-            }
-            prompt_parts.push("다음은 한국어 음성 전사입니다.".to_string());
-        }
-        _ => {
-            if !app_name.is_empty() {
-                prompt_parts.push(format!("User is using {}.", app_name));
-            }
-        }
+        "zh-TW" | "zh" | "yue" => prompt_parts.push("繁體中文語音轉錄。".to_string()),
+        "zh-CN"                 => prompt_parts.push("简体中文语音转录。".to_string()),
+        "ja"                    => prompt_parts.push("日本語の音声書き起こし。".to_string()),
+        "ko"                    => prompt_parts.push("한국어 음성 전사.".to_string()),
+        _                       => {}
     }
-    // Append dictionary terms at the end of prompt (tail tokens have strongest bias).
-    // Budget: ~350 chars total for prompt; reserve what's already used.
+
+    // Dictionary terms at the tail (strongest bias position).
+    // Budget: ~350 chars total; reserve what's already used.
     if !dictionary_terms.is_empty() {
-        let sep = match language {
-            "zh-TW" | "zh" | "zh-CN" | "ja" => "、",
-            "ko" => ", ",
-            _ => ", ",
-        };
-        let sep_bytes = sep.len();
         let used_chars: usize = prompt_parts.iter().map(|p| p.len()).sum();
         let budget = 350usize.saturating_sub(used_chars);
-        let terms_str = dictionary_terms.join(sep);
+        let terms_str = dictionary_terms.join(", ");
         if terms_str.len() <= budget {
             prompt_parts.push(terms_str);
         } else {
-            // Greedily pick terms that fit
             let mut remaining = budget;
             let mut picked: Vec<&str> = Vec::new();
             for term in dictionary_terms {
-                let cost = term.len() + if picked.is_empty() { 0 } else { sep_bytes };
+                let cost = term.len() + if picked.is_empty() { 0 } else { 2 };
                 if cost > remaining {
                     break;
                 }
@@ -363,7 +346,7 @@ pub fn transcribe_with_cached_whisper(
                 remaining -= cost;
             }
             if !picked.is_empty() {
-                prompt_parts.push(picked.join(sep));
+                prompt_parts.push(picked.join(", "));
             }
         }
     }
@@ -374,8 +357,8 @@ pub fn transcribe_with_cached_whisper(
     }
 
     tracing::info!(
-        "[whisper] language={:?} (config: {:?}), app={:?}, prompt={:?}",
-        lang_hint, language, app_name, prompt
+        "[whisper] language={:?} (config: {:?}), prompt={:?}",
+        lang_hint, language, prompt
     );
 
     params.set_print_special(false);

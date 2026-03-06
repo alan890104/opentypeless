@@ -128,6 +128,11 @@ pub struct AppState {
     pub registered_edit_shortcut: Mutex<Option<Shortcut>>,
     /// Cached `Shortcut` for the meeting hotkey. Same rationale as above.
     pub registered_meeting_shortcut: Mutex<Option<Shortcut>>,
+    /// Set to `true` when we sent a Play/Pause media key at recording start.
+    /// Cleared (and play/pause key sent again) when recording ends, so the
+    /// user's music resumes automatically.  Guards against spuriously resuming
+    /// music that was already paused before recording started.
+    pub media_paused_by_sumi: AtomicBool,
 }
 
 /// Emit a `"transcription-partial"` event to the overlay window.
@@ -232,21 +237,19 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
         }
 
         let stt_language = stt_config.language.clone();
-        let stt_app_name = state
-            .captured_context
-            .lock()
-            .ok()
-            .and_then(|ctx| ctx.as_ref().map(|c| c.app_name.clone()))
-            .unwrap_or_default();
         let dictionary_terms = polish_config.dictionary.enabled_terms();
 
-        match audio::do_stop_recording(
+        let stop_result = audio::do_stop_recording(
             &state,
             &stt_config,
             &stt_language,
-            &stt_app_name,
             &dictionary_terms,
-        ) {
+        );
+        // Resume media paused at recording start.
+        if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+            platform::resume_now_playing();
+        }
+        match stop_result {
             Ok((text, samples_16k)) => {
                 let transcribe_elapsed = pipeline_start.elapsed();
                 tracing::info!("[timing] stop→transcribed: {:.0?} | len: {} graphemes", transcribe_elapsed, text.graphemes(true).count());
@@ -529,12 +532,6 @@ fn stop_edit_and_replace(app: &AppHandle) {
         }
 
         let edit_stt_language = stt_config.language.clone();
-        let edit_app_name = state
-            .captured_context
-            .lock()
-            .ok()
-            .and_then(|ctx| ctx.as_ref().map(|c| c.app_name.clone()))
-            .unwrap_or_default();
         let edit_dict_terms = polish_config.dictionary.enabled_terms();
 
         // The edit path never spawns a live-preview feeder. Defensively clear
@@ -545,13 +542,17 @@ fn stop_edit_and_replace(app: &AppHandle) {
             *r = None;
         }
 
-        match audio::do_stop_recording(
+        let stop_result = audio::do_stop_recording(
             &state,
             &stt_config,
             &edit_stt_language,
-            &edit_app_name,
             &edit_dict_terms,
-        ) {
+        );
+        // Resume media paused at recording start.
+        if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+            platform::resume_now_playing();
+        }
+        match stop_result {
             Ok((instruction, _samples)) => {
                 tracing::info!("Edit instruction received: {} graphemes", instruction.graphemes(true).count());
 
@@ -908,17 +909,17 @@ pub fn run() {
                 std::thread::spawn(move || cleanup_obsolete_models(&dir));
             }
 
-            // Pre-initialise audio pipeline
+            // On-demand model: do NOT open the mic stream at startup.
+            // The stream is opened by do_start_recording on the first hotkey press.
+            // Opening CoreAudio at startup activates system DSP (echo-cancellation,
+            // noise-reduction) which alters system audio output — e.g. making
+            // background music louder — even when the user is not recording.
             let is_recording = Arc::new(AtomicBool::new(false));
             let buffer = Arc::new(Mutex::new(Vec::new()));
-            let (mic_available, sample_rate, audio_thread_init) =
-                match audio::spawn_audio_thread(Arc::clone(&buffer), Arc::clone(&is_recording), settings.mic_device.clone()) {
-                    Ok((sr, control)) => (true, Some(sr), Some(control)),
-                    Err(e) => {
-                        tracing::error!("Audio init failed: {}", e);
-                        (false, None, None)
-                    }
-                };
+            let mic_available = false;
+            let sample_rate: Option<u32> = None;
+            let audio_thread_init: Option<audio::AudioThreadControl> = None;
+            tracing::info!("Mic stream deferred — will open on first recording (on-demand model)");
 
             let http_client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
@@ -976,6 +977,7 @@ pub fn run() {
                 registered_meeting_shortcut: Mutex::new(
                     settings.meeting_hotkey.as_deref().and_then(parse_hotkey_string),
                 ),
+                media_paused_by_sumi: AtomicBool::new(false),
             });
 
             // Register a CoreAudio listener for default-input-device changes.
@@ -1010,6 +1012,14 @@ pub fn run() {
                     }
 
                     tracing::info!("Default audio input device changed to Bluetooth — reconnecting to built-in mic");
+
+                    // On-demand model: stream is closed between recordings.
+                    // resolve_input_device will avoid BT automatically on the next
+                    // recording start, so no reconnect is needed while idle.
+                    if !state.is_recording.load(Ordering::SeqCst) {
+                        tracing::info!("Not recording — skipping BT reconnect; built-in will be used on next hotkey press");
+                        return;
+                    }
 
                     // Guard against multiple concurrent reconnects: CoreAudio can fire
                     // 2-3 property-change notifications per physical hotplug event.
@@ -1398,6 +1408,23 @@ pub fn run() {
                                 let preferred_device = state.settings.lock()
                                     .ok()
                                     .and_then(|s| s.mic_device.clone());
+
+                                // Show overlay in 'preparing' state before opening the mic
+                                // stream (on-demand model).  CoreAudio init takes ~70 ms;
+                                // the spinner gives the user immediate visual feedback.
+                                if let Some(overlay) = app.get_webview_window("overlay") {
+                                    let _ = overlay.emit("recording-status", "preparing");
+                                    center_overlay_bottom(&overlay);
+                                    platform::show_overlay(&overlay);
+                                }
+
+                                // Pause background music only if a media player is open.
+                                // Skipping when none is running avoids launching Apple Music.
+                                if platform::is_now_playing() {
+                                    platform::pause_now_playing();
+                                    state.media_paused_by_sumi.store(true, Ordering::SeqCst);
+                                }
+
                                 match audio::do_start_recording(
                                     &state.is_recording,
                                     &state.mic_available,
@@ -1540,8 +1567,7 @@ pub fn run() {
                                             let rec_status = if is_edit_hotkey { "edit_recording" } else { "recording" };
                                             let _ = overlay.emit("recording-status", rec_status);
                                             let _ = overlay.emit("recording-max-duration", MAX_RECORDING_SECS);
-                                            center_overlay_bottom(&overlay);
-                                            platform::show_overlay(&overlay);
+                                            // overlay already shown in 'preparing' state above
                                         }
 
                                         // Audio level monitoring thread
@@ -1553,9 +1579,15 @@ pub fn run() {
                                             state.edit_mode.store(false, Ordering::SeqCst);
                                             restore_clipboard(&state);
                                         }
-                                        if let Some(overlay) = app.get_webview_window("overlay") {
-                                            platform::hide_overlay(&overlay);
+                                        // Resume music if we paused it before do_start_recording.
+                                        if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+                                            platform::resume_now_playing();
                                         }
+                                        // Hide overlay — stream failed to open.
+                                        if let Some(overlay) = app.get_webview_window("overlay") {
+                                            let _ = overlay.emit("recording-status", "error");
+                                        }
+                                        hide_overlay_delayed(&app, 1500);
                                     }
                                 }
                             } else {
@@ -1648,6 +1680,20 @@ fn start_meeting_mode(app: &AppHandle) {
     state.meeting_feeder_done.store(false, Ordering::SeqCst);
 
     let preferred_device = state.settings.lock().ok().and_then(|s| s.mic_device.clone());
+
+    // Show overlay in 'preparing' state before opening the mic stream.
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.emit("recording-status", "preparing");
+        center_overlay_bottom(&overlay);
+        platform::show_overlay(&overlay);
+    }
+
+    // Pause background music for the duration of the meeting.
+    if platform::is_now_playing() {
+        platform::pause_now_playing();
+        state.media_paused_by_sumi.store(true, Ordering::SeqCst);
+    }
+
     if let Err(e) = audio::do_start_recording(
         &state.is_recording,
         &state.mic_available,
@@ -1659,6 +1705,10 @@ fn start_meeting_mode(app: &AppHandle) {
     ) {
         tracing::error!("Meeting mode start failed: {}", e);
         state.meeting_active.store(false, Ordering::SeqCst);
+        // Resume music if we paused it before do_start_recording.
+        if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+            platform::resume_now_playing();
+        }
         if let Some(overlay) = app.get_webview_window("overlay") {
             let _ = overlay.emit("recording-status", "error");
             let app_for_hide = app.clone();
@@ -1732,8 +1782,7 @@ fn start_meeting_mode(app: &AppHandle) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.emit("recording-status", "meeting_recording");
         let _ = overlay.emit("recording-max-duration", 0u64); // 0 = unlimited
-        center_overlay_bottom(&overlay);
-        platform::show_overlay(&overlay);
+        // overlay already shown in 'preparing' state above
     }
 
     // Audio level monitor thread.
@@ -1914,6 +1963,11 @@ fn stop_meeting_mode(app: &AppHandle) {
     // Clear the active note id.
     if let Ok(mut nid) = state.active_meeting_note_id.lock() {
         *nid = None;
+    }
+
+    // Resume media paused when meeting started.
+    if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
+        platform::resume_now_playing();
     }
 
     if transcript.is_empty() {
