@@ -2,7 +2,8 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { marked } from 'marked';
   import { t } from '$lib/stores/i18n.svelte';
-  import { showConfirm } from '$lib/stores/ui.svelte';
+  import { showConfirm, setCurrentPage, setHighlightSection } from '$lib/stores/ui.svelte';
+  import { getPolishConfig } from '$lib/stores/settings.svelte';
   import {
     listMeetingNotes,
     getActiveMeetingNoteId,
@@ -211,6 +212,18 @@
   // ── Polish ──
   async function handlePolish() {
     if (!selectedNote || polishing) return;
+    if (!getPolishConfig().enabled) {
+      showConfirm(
+        t('meeting.polish'),
+        t('meeting.polishNotReady'),
+        t('test.step5.goToSettings'),
+        () => {
+          setHighlightSection('polish');
+          setCurrentPage('settings');
+        },
+      );
+      return;
+    }
     const noteId = selectedNote.id;
     polishing = true;
     try {
@@ -715,7 +728,7 @@
     padding: 4px;
     border-radius: 4px;
     display: flex;
-    opacity: 0;
+    opacity: 0.3;
     transition: opacity 0.15s;
   }
   .content-title:hover .rename-btn {
@@ -903,12 +916,12 @@
   .polish-btn {
     background: none;
     border: none;
-    color: var(--text-tertiary);
+    color: #f5a623;
     cursor: pointer;
     padding: 4px;
     border-radius: 4px;
     display: flex;
-    opacity: 0;
+    opacity: 0.5;
     transition: opacity 0.15s, color 0.15s;
   }
   .content-title:hover .polish-btn {
