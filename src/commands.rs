@@ -2718,3 +2718,72 @@ fn parse_polish_json(raw: &str, fallback_title: &str) -> PolishedMeetingNote {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_polish_json_valid() {
+        let raw = r#"{"title": "Meeting Title", "summary": "Key Points"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Meeting Title");
+        assert_eq!(result.summary, "Key Points");
+    }
+
+    #[test]
+    fn parse_polish_json_code_fence() {
+        let raw = "```json\n{\"title\": \"Fenced\", \"summary\": \"Content\"}\n```";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fenced");
+        assert_eq!(result.summary, "Content");
+    }
+
+    #[test]
+    fn parse_polish_json_bare_code_fence() {
+        let raw = "```\n{\"title\": \"Bare\", \"summary\": \"Content\"}\n```";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Bare");
+        assert_eq!(result.summary, "Content");
+    }
+
+    #[test]
+    fn parse_polish_json_invalid_falls_back() {
+        let raw = "This is not JSON at all";
+        let result = parse_polish_json(raw, "My Fallback Title");
+        assert_eq!(result.title, "My Fallback Title");
+        assert_eq!(result.summary, "This is not JSON at all");
+    }
+
+    #[test]
+    fn parse_polish_json_truncated_falls_back() {
+        let raw = "{\"title\": \"Truncated\", \"summary\": \"## Key Points";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fallback");
+        assert_eq!(result.summary, raw.trim());
+    }
+
+    #[test]
+    fn parse_polish_json_missing_title_uses_fallback() {
+        let raw = r#"{"summary": "Only a summary"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Fallback");
+        assert_eq!(result.summary, "Only a summary");
+    }
+
+    #[test]
+    fn parse_polish_json_missing_summary_uses_raw() {
+        let raw = r#"{"title": "Only a title"}"#;
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Only a title");
+        assert_eq!(result.summary, raw);
+    }
+
+    #[test]
+    fn parse_polish_json_whitespace_trimmed() {
+        let raw = "  \n  {\"title\": \"Trimmed\", \"summary\": \"Content\"}  \n  ";
+        let result = parse_polish_json(raw, "Fallback");
+        assert_eq!(result.title, "Trimmed");
+        assert_eq!(result.summary, "Content");
+    }
+}
