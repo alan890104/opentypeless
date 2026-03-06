@@ -1930,8 +1930,8 @@ fn stop_meeting_mode(app: &AppHandle) {
         let _ = overlay.emit("recording-status", "meeting_stopped");
     }
     hide_overlay_delayed(app, 2000);
-    // meeting_active is already false: either the feeder set it to false when
-    // it finished normally, or stop_meeting_mode set it to false on timeout.
+    // meeting_active is already false: stop_meeting_mode set it unconditionally
+    // at line ~1856 before waiting for the feeder to finish.
 
     // Allow future stop_meeting_mode calls (e.g. for the next meeting session).
     state.meeting_stopping.store(false, Ordering::SeqCst);

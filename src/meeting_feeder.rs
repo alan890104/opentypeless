@@ -335,13 +335,22 @@ pub(crate) fn run_meeting_feeder(
     // In the normal path meeting_session always equals session_id here.
     let state = app.state::<crate::AppState>();
     if state.meeting_session.load(Ordering::SeqCst) == session_id {
-        // SeqCst store ensures meeting_feeder_done is visible to the waiter's
-        // condition closure before notify_all fires. meeting_done_mu is NOT held
-        // here: wait_timeout_while re-checks the predicate after waking, so a
-        // missed notify is impossible. Holding the mutex here would be the
-        // conventional pattern but is unnecessary and adds contention.
-        state.meeting_feeder_done.store(true, Ordering::SeqCst);
-        state.meeting_active.store(false, Ordering::SeqCst);
+        // Hold meeting_done_mu while setting meeting_feeder_done so that
+        // stop_meeting_mode cannot observe the flag-false → wait path between
+        // its predicate check and the wait_timeout_while sleep entry.  Without
+        // this, a missed-wakeup is possible:
+        //   1. stop_meeting_mode holds the mutex, checks predicate → false (must wait)
+        //   2. we store meeting_feeder_done=true + notify_all without the mutex
+        //      → no thread is sleeping yet, signal is lost
+        //   3. wait_timeout_while atomically releases the mutex and blocks
+        //      → nobody wakes it; sleeps for the full 5-min timeout
+        // Holding the mutex here ensures step 2 can only execute after step 3
+        // has atomically moved stop_meeting_mode into the waiting state.
+        {
+            let _guard = state.meeting_done_mu.lock().unwrap_or_else(|e| e.into_inner());
+            state.meeting_feeder_done.store(true, Ordering::SeqCst);
+        }
+        // Notify after releasing the mutex (standard condvar pattern).
         state.meeting_done_cv.notify_all();
     }
 }
