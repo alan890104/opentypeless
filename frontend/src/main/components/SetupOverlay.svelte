@@ -462,6 +462,7 @@
   // ── Polish Choice ──
 
   let polishModelsLoading = $state(true);
+  let polishLocalActivating = $state(false);
   let polishMode = $state<string>('local');
   let polishModels = $state<PolishModelInfo[]>([]);
   let selectedPolishModel = $state<PolishModel>('phi4_mini');
@@ -565,10 +566,13 @@
   async function onPolishLocalDownload() {
     // Switch to selected model in backend + settings store
     setPolishModel(selectedPolishModel);
+    polishLocalActivating = true;
     try {
       await switchPolishModel(selectedPolishModel);
     } catch (e) {
       console.error('Failed to switch polish model:', e);
+    } finally {
+      polishLocalActivating = false;
     }
 
     if (selectedModelDownloaded) {
@@ -630,7 +634,6 @@
 
   async function activatePolishModel() {
     currentState = 'llmActivating';
-    startLlmActivatingTimer();
     try {
       await switchPolishModel(selectedPolishModel);
     } catch (e) {
@@ -639,29 +642,10 @@
       lastFailedStep = 'llmActivate';
       currentState = 'error';
       return;
-    } finally {
-      stopLlmActivatingTimer();
     }
     setPolishMode('local');
     setPolishEnabled(true);
     finishSetup();
-  }
-
-  // ── LLM Activating elapsed timer ──
-
-  let llmActivatingElapsed = $state(0);
-  let llmActivatingTimer: ReturnType<typeof setInterval> | null = null;
-
-  function startLlmActivatingTimer() {
-    llmActivatingElapsed = 0;
-    llmActivatingTimer = setInterval(() => { llmActivatingElapsed += 1; }, 1000);
-  }
-
-  function stopLlmActivatingTimer() {
-    if (llmActivatingTimer) {
-      clearInterval(llmActivatingTimer);
-      llmActivatingTimer = null;
-    }
   }
 
   // ── Error state ──
@@ -731,7 +715,6 @@
     if (vadDownloadUnlisten) { vadDownloadUnlisten(); vadDownloadUnlisten = null; }
     if (qwen3DownloadUnlisten) { qwen3DownloadUnlisten(); qwen3DownloadUnlisten = null; }
     if (llmDownloadUnlisten) { llmDownloadUnlisten(); llmDownloadUnlisten = null; }
-    stopLlmActivatingTimer();
   });
 </script>
 
@@ -1018,7 +1001,6 @@
           </div>
           <div class="setup-title">{t('setup.llmActivatingTitle')}</div>
           <div class="setup-desc">{t('setup.llmActivatingDesc')}</div>
-          <div class="setup-elapsed">{llmActivatingElapsed}s</div>
           <button class="setup-skip-link" onclick={() => finishSetup()}>{t('setup.llmSkip')}</button>
         </div>
       {/if}
@@ -1084,8 +1066,8 @@
               {/each}
             </div>
 
-            <button class="setup-download-btn" disabled={polishModelsLoading} onclick={onPolishLocalDownload}>
-              {#if polishModelsLoading}
+            <button class="setup-download-btn" disabled={polishModelsLoading || polishLocalActivating} onclick={onPolishLocalDownload}>
+              {#if polishModelsLoading || polishLocalActivating}
                 <span class="setup-btn-spinner">
                   <svg class="setup-spinner" width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <circle cx="7" cy="7" r="5" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>
@@ -1418,13 +1400,6 @@
   .setup-download-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
-  }
-
-  .setup-elapsed {
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-    color: var(--text-tertiary);
-    margin-bottom: 12px;
   }
 
   .setup-btn-spinner {
