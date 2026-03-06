@@ -130,9 +130,10 @@ fn run_meeting_worker(
         };
 
         if samples.is_empty() {
-            // Empty Final = clean stop with no trailing audio.
             if is_final {
+                // Empty Final = clean stop with no trailing audio; nothing more will arrive.
                 tracing::debug!("[{label}] worker: empty final segment, nothing to transcribe");
+                break;
             }
             continue;
         }
@@ -289,7 +290,9 @@ fn run_meeting_segmenter(
         chunk_buf.len()
     );
     let _ = tx.send(Segment::Final(chunk_buf));
-    // tx is dropped here, closing the channel and causing worker's for-loop to exit.
+    // Normal path: tx dropped here → channel closes → worker's for-loop exits.
+    // Failure path: if the worker already exited early (session change or cancellation),
+    // send returns Err and the trailing audio is intentionally discarded.
 }
 
 /// Shared meeting feeder — two-thread producer-consumer pipeline.
