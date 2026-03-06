@@ -1260,10 +1260,13 @@ pub fn run() {
                                     "Idle mic timeout ({}s) — closing mic stream",
                                     timeout_secs
                                 );
+                                // Set mic_available=false BEFORE stopping the
+                                // stream so a concurrent do_start_recording
+                                // sees the unavailable flag immediately.
+                                state.mic_available.store(false, Ordering::SeqCst);
                                 if let Some(ctrl) = at.take() {
                                     ctrl.stop();
                                 }
-                                state.mic_available.store(false, Ordering::SeqCst);
                                 // Reset idle clock so a hot-plug reconnect
                                 // doesn't immediately re-trigger a close.
                                 if let Ok(mut t) = state.last_recording_end.lock() {

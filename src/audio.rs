@@ -469,7 +469,7 @@ pub fn do_stop_recording(
             }
         }
     } else {
-        tracing::warn!("VAD model not downloaded, using RMS trimming");
+        tracing::debug!("VAD model not downloaded, using RMS trimming");
         rms_trim_silence(&mut samples_16k)?;
     }
 

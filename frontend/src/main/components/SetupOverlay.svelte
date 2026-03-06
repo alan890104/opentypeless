@@ -560,7 +560,7 @@
 
     if (selectedModelDownloaded) {
       // Model already on disk — show activation spinner
-      activatePolishModel();
+      void activatePolishModel();
     } else {
       startLlmDownload();
     }
@@ -641,7 +641,7 @@
     switch (lastFailedStep) {
       case 'sttDownload': startSttDownload(); break;
       case 'sttActivate': activateSttModel(); break;
-      case 'llmActivate': activatePolishModel(); break;
+      case 'llmActivate': void activatePolishModel(); break;
     }
   }
 
