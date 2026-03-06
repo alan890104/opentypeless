@@ -329,5 +329,9 @@ pub(crate) fn run_meeting_feeder(
     // reads the WAL only after this point, guaranteeing the complete transcript.
     let state = app.state::<crate::AppState>();
     state.meeting_feeder_done.store(true, Ordering::SeqCst);
-    state.meeting_active.store(false, Ordering::SeqCst);
+    // Only clear meeting_active if we still own the session; a new meeting may
+    // have started while the worker was draining its final segment.
+    if state.meeting_session.load(Ordering::SeqCst) == session_id {
+        state.meeting_active.store(false, Ordering::SeqCst);
+    }
 }

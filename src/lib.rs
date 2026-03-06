@@ -1240,7 +1240,11 @@ pub fn run() {
                                 if state.meeting_active.load(Ordering::SeqCst) {
                                     let app_clone = app.clone();
                                     std::thread::spawn(move || stop_meeting_mode(&app_clone));
-                                } else {
+                                } else if !state.meeting_stopping.load(Ordering::SeqCst) {
+                                    // Guard: don't start a new meeting while stop_meeting_mode is
+                                    // still running (meeting_active=false but worker not done yet).
+                                    // Starting here would reset meeting_stopping=false via
+                                    // start_meeting_mode, breaking the CAS idempotency gate.
                                     start_meeting_mode(app);
                                 }
                                 return;
