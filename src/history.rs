@@ -188,7 +188,7 @@ pub fn get_stats(history_dir: &Path) -> HistoryStats {
                 SUM(CASE WHEN stt_model NOT LIKE '%(Cloud/%)%' THEN 1 ELSE 0 END),
                 COALESCE(SUM(CASE WHEN stt_model NOT LIKE '%(Cloud/%)%' THEN duration_secs ELSE 0 END), 0),
                 COALESCE(SUM(word_count), 0),
-                SUM(CASE WHEN polish_model LIKE '%(Local)' THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN polish_model LIKE '%(Local)' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN polish_model LIKE '%(Local)' THEN LENGTH(raw_text) ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN polish_model LIKE '%(Local)' THEN LENGTH(text) ELSE 0 END), 0)
          FROM history",

@@ -48,7 +48,7 @@ let settings = $state<Settings>({
   onboarding_completed: false,
   mic_device: null,
   meeting_hotkey: null,
-  idle_mic_timeout_secs: 300,
+  idle_mic_timeout_secs: 0,
 });
 
 export function getSettings(): Settings {

@@ -135,7 +135,7 @@ pub struct AppState {
     pub media_paused_by_sumi: AtomicBool,
     /// Timestamp of the last recording end. Used by the idle mic watcher to
     /// determine when to close the mic stream.
-    pub last_recording_end: Mutex<Instant>,
+    pub last_recording_end: Mutex<Option<Instant>>,
 }
 
 /// Emit a `"transcription-partial"` event to the overlay window.
@@ -262,7 +262,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
             &dictionary_terms,
         );
         if let Ok(mut t) = state.last_recording_end.lock() {
-            *t = Instant::now();
+            *t = Some(Instant::now());
         }
         // Resume media paused at recording start.
         if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
@@ -568,7 +568,7 @@ fn stop_edit_and_replace(app: &AppHandle) {
             &edit_dict_terms,
         );
         if let Ok(mut t) = state.last_recording_end.lock() {
-            *t = Instant::now();
+            *t = Some(Instant::now());
         }
         // Resume media paused at recording start.
         if state.media_paused_by_sumi.swap(false, Ordering::SeqCst) {
@@ -1000,7 +1000,7 @@ pub fn run() {
                     settings.meeting_hotkey.as_deref().and_then(parse_hotkey_string),
                 ),
                 media_paused_by_sumi: AtomicBool::new(false),
-                last_recording_end: Mutex::new(Instant::now()),
+                last_recording_end: Mutex::new(None),
             });
 
             // Register a CoreAudio listener for default-input-device changes.
@@ -1228,10 +1228,23 @@ pub fn run() {
                         let elapsed = state
                             .last_recording_end
                             .lock()
-                            .map(|t| t.elapsed())
+                            .ok()
+                            .and_then(|t| t.map(|i| i.elapsed()))
                             .unwrap_or_default();
 
+                        if elapsed.is_zero() {
+                            // Never recorded yet — don't count down.
+                            continue;
+                        }
+
                         if elapsed >= std::time::Duration::from_secs(timeout_secs as u64) {
+                            // Re-check atomically right before closing to
+                            // minimise the TOCTOU window with do_start_recording.
+                            if state.is_recording.load(Ordering::SeqCst)
+                                || state.meeting_active.load(Ordering::SeqCst)
+                            {
+                                continue;
+                            }
                             tracing::info!(
                                 "Idle mic timeout ({}s) — closing mic stream",
                                 timeout_secs
@@ -1240,6 +1253,11 @@ pub fn run() {
                                 &state.audio_thread,
                                 &state.mic_available,
                             );
+                            // Reset the idle clock so the watcher doesn't
+                            // immediately re-close if mic becomes available again.
+                            if let Ok(mut t) = state.last_recording_end.lock() {
+                                *t = Some(Instant::now());
+                            }
                         }
                     }
                 });
@@ -2002,7 +2020,7 @@ fn stop_meeting_mode(app: &AppHandle) {
     // triggered by dead-stream, which is fine — the store is idempotent).
     state.is_recording.store(false, Ordering::SeqCst);
     if let Ok(mut t) = state.last_recording_end.lock() {
-        *t = Instant::now();
+        *t = Some(Instant::now());
     }
     // Wake the meeting feeder immediately so it exits its 2 s sleep and starts
     // post-loop work (trailing feed + finish_streaming) right away.

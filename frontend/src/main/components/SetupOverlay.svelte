@@ -370,7 +370,7 @@
     } catch (e) {
       console.error('Failed to activate STT model:', e);
       errorMessage = String(e);
-      lastFailedDownload = 'stt';
+      lastFailedStep = 'sttActivate';
       currentState = 'error';
       return;
     }
@@ -415,7 +415,7 @@
           whisperDone = true;
         } else if (p.status === 'error') {
           errorMessage = p.message || t('setup.errorDefault');
-          lastFailedDownload = 'stt';
+          lastFailedStep = 'sttDownload';
           currentState = 'error';
         }
       });
@@ -424,7 +424,7 @@
         await downloadWhisperModel(selectedSttModel);
       } catch (e) {
         errorMessage = String(e);
-        lastFailedDownload = 'stt';
+        lastFailedStep = 'sttDownload';
         currentState = 'error';
       }
     } else {
@@ -434,7 +434,7 @@
           whisperDone = true; // reuse flag — signals STT model is done
         } else if (p.status === 'error') {
           errorMessage = p.message || t('setup.errorDefault');
-          lastFailedDownload = 'stt';
+          lastFailedStep = 'sttDownload';
           currentState = 'error';
         } else {
           const total = p.total || 1;
@@ -450,7 +450,7 @@
         await downloadQwen3AsrModel(selectedQwen3Model);
       } catch (e) {
         errorMessage = String(e);
-        lastFailedDownload = 'stt';
+        lastFailedStep = 'sttDownload';
         currentState = 'error';
       }
     }
@@ -628,7 +628,7 @@
     } catch (e) {
       console.error('Failed to activate polish model:', e);
       errorMessage = String(e);
-      lastFailedDownload = 'llm';
+      lastFailedStep = 'llmActivate';
       currentState = 'error';
       return;
     }
@@ -640,13 +640,14 @@
   // ── Error state ──
 
   let errorMessage = $state('');
-  let lastFailedDownload = $state<'stt' | 'llm'>('stt');
+  let lastFailedStep = $state<'sttDownload' | 'sttActivate' | 'llmDownload' | 'llmActivate'>('sttDownload');
 
   function onRetryDownload() {
-    if (lastFailedDownload === 'stt') {
-      startSttDownload();
-    } else {
-      startLlmDownload();
+    switch (lastFailedStep) {
+      case 'sttDownload': startSttDownload(); break;
+      case 'sttActivate': activateSttModel(); break;
+      case 'llmDownload': startLlmDownload(); break;
+      case 'llmActivate': activatePolishModel(); break;
     }
   }
 
