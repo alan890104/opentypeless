@@ -1,11 +1,14 @@
 //! Credential storage — platform-specific implementations.
 //!
-//! macOS: hybrid approach — good UX AND no argv leaks:
-//!   save()   → security-framework + Data Protection Keychain
-//!              (kSecUseDataProtectionKeychain=true, no per-app ACL, no prompts ever)
+//! macOS: hybrid approach — Data Protection Keychain primary + CLI backup:
+//!   save()   → security-framework + Data Protection Keychain (primary,
+//!              kSecUseDataProtectionKeychain=true, no per-app ACL, no prompts ever)
+//!              + `security` CLI backup written only when value changes (checked via
+//!              stdout read first; the key appears in argv only on actual key change)
 //!   load()   → Data Protection Keychain first; falls back to `security` CLI for
-//!              legacy items (key returned via stdout, never in argv), then auto-migrates
-//!   delete() → Data Protection Keychain + `security` CLI legacy cleanup
+//!              legacy/backup items (key returned via stdout, never in argv),
+//!              then migrates to Data Protection Keychain while keeping CLI backup
+//!   delete() → Data Protection Keychain + `security` CLI cleanup
 //!
 //! Non-macOS: `keyring` crate (Windows Credential Manager, etc.)
 
@@ -23,10 +26,14 @@ pub fn save(provider: &str, key: &str) -> Result<(), String> {
     const ERR_DUPLICATE: i32 = -25299;        // errSecDuplicateItem
     const ERR_MISSING_ENTITLEMENT: i32 = -34018; // errSecMissingEntitlement
 
-    let mut opts = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
-    opts.use_protected_keychain();
-    match set_generic_password_options(key.as_bytes(), opts) {
-        Ok(()) => return Ok(()),
+    // Try Data Protection Keychain. Track whether the entitlement is available so
+    // we know whether the CLI write below is the primary store or just a backup.
+    let dp_ok = match {
+        let mut opts = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
+        opts.use_protected_keychain();
+        set_generic_password_options(key.as_bytes(), opts)
+    } {
+        Ok(()) => true,
         Err(e) if e.code() == ERR_DUPLICATE => {
             // Item already exists — delete then re-add with the updated value.
             let mut del = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
@@ -36,34 +43,73 @@ pub fn save(provider: &str, key: &str) -> Result<(), String> {
             }
             let mut opts2 = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
             opts2.use_protected_keychain();
-            return set_generic_password_options(key.as_bytes(), opts2)
-                .map_err(|e| format!("Keychain update failed: {}", e));
+            set_generic_password_options(key.as_bytes(), opts2)
+                .map_err(|e| format!("Keychain update failed: {}", e))?;
+            true
         }
         Err(e) if e.code() == ERR_MISSING_ENTITLEMENT => {
-            // App isn't signed with keychain-access-groups yet (e.g. raw cargo build).
-            // Fall back to security CLI so the key is never silently dropped.
+            // App lacks keychain-access-groups entitlement (e.g. unsigned build).
             tracing::warn!("Data Protection Keychain unavailable, falling back to security CLI");
+            false
         }
         Err(e) => return Err(format!("Keychain save failed: {}", e)),
-    }
+    };
 
-    // Fallback: security CLI. The key appears in argv briefly — acceptable only
-    // because this path is only reached when the app lacks proper entitlements.
+    // Always mirror the key in the security CLI store as a fallback.  If the
+    // keychain-access-groups entitlement changes between app versions (e.g.
+    // Team ID prefix added or removed), the Data Protection Keychain items
+    // become inaccessible to the new binary.  The CLI copy ensures load() can
+    // still recover the key via its fallback path.
+    //
+    // Read the current CLI value first (stdout only, no argv exposure) and skip
+    // the write when the stored value already matches — this avoids passing the
+    // key through argv on every save when nothing has changed.
     let service = keychain_service(provider);
-    let _ = std::process::Command::new("/usr/bin/security")
-        .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
-        .output();
-    let out = std::process::Command::new("/usr/bin/security")
-        .args(["add-generic-password", "-s", &service, "-a", SERVICE, "-w", key, "-U"])
+    let existing_cli = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", &service, "-a", SERVICE, "-w"])
         .output()
-        .map_err(|e| format!("Failed to run security CLI: {}", e))?;
-    if out.status.success() {
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string());
+
+    let cli_out = if existing_cli.as_deref() == Some(key) {
+        // CLI backup is already up to date; skip the argv-visible write.
+        None
+    } else {
+        let _ = std::process::Command::new("/usr/bin/security")
+            .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
+            .output();
+        Some(
+            std::process::Command::new("/usr/bin/security")
+                .args(["add-generic-password", "-s", &service, "-a", SERVICE, "-w", key, "-U"])
+                .output()
+                .map_err(|e| format!("Failed to run security CLI: {}", e))?,
+        )
+    };
+
+    if dp_ok {
+        // Data Protection Keychain is the primary store; CLI is just a backup.
+        // Ignore CLI failures — they are non-fatal when the primary succeeded.
+        if let Some(out) = cli_out {
+            if !out.status.success() {
+                tracing::warn!(
+                    "CLI keychain backup write failed (non-fatal): {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+        }
         Ok(())
     } else {
-        Err(format!(
-            "security add-generic-password failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
+        // CLI is the only store — a skipped write means it was already current.
+        match cli_out {
+            None => Ok(()),
+            Some(out) if out.status.success() => Ok(()),
+            Some(out) => Err(format!(
+                "security add-generic-password failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )),
+        }
     }
 }
 
@@ -102,25 +148,12 @@ pub fn load(provider: &str) -> Result<String, String> {
         return Ok(String::new());
     }
 
-    // Only migrate if entitlement is present — otherwise save() would fall back to
-    // security CLI (recreating the legacy item), and the delete below would erase it.
+    // Only migrate if entitlement is present. save() writes both Data Protection
+    // Keychain (primary) and CLI (backup via dual-write), so after migration the
+    // CLI item is already the backup — do NOT delete it, or the backup is lost.
     if has_entitlement {
-        match save(provider, &key) {
-            Ok(()) => {
-                let out = std::process::Command::new("/usr/bin/security")
-                    .args(["delete-generic-password", "-s", &service, "-a", SERVICE])
-                    .output();
-                if let Ok(o) = out {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    if !o.status.success() {
-                        tracing::warn!(
-                            "Legacy Keychain entry cleanup may have failed (status={:?}): {}",
-                            o.status.code(), stderr.trim()
-                        );
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("Keychain migration failed: {}", e),
+        if let Err(e) = save(provider, &key) {
+            tracing::warn!("Keychain migration failed: {}", e);
         }
     }
 

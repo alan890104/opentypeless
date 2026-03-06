@@ -224,6 +224,43 @@ pub(crate) fn run_whisper_preview_loop(app: AppHandle, language: String, session
         }
     }
 
+    // Final inference pass: run one last inference on whatever audio has
+    // accumulated since the last tick so the overlay shows the complete
+    // transcript before the "transcribing" status clears partialText.
+    // Skip if session has already advanced (zombie feeder).
+    //
+    // Trailing audio is read BEFORE the is_empty check: if the feeder buffer
+    // is empty but audio arrived in state.buffer after the last tick, we still
+    // want to run inference on it.
+    if state.whisper_preview_session.load(Ordering::SeqCst) == session_id {
+        let trailing_raw: Vec<f32> = {
+            let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let tail = last_tail.min(buf.len());
+            buf[tail..].to_vec()
+        };
+        if !trailing_raw.is_empty() {
+            let trailing_16k = if sr != 16000 {
+                crate::audio::resample(&trailing_raw, sr, 16000)
+            } else {
+                trailing_raw
+            };
+            feeder.push_samples(&trailing_16k);
+        }
+
+        if !feeder.buffer.is_empty() {
+            if let Ok(ctx_guard) = state.whisper_ctx.try_lock() {
+                if ctx_guard.is_some() {
+                    if let Ok(text) = feeder.infer(&ctx_guard, &language) {
+                        if !text.is_empty() {
+                            tracing::debug!("[whisper-preview] final partial: {:?}", text);
+                            crate::emit_transcription_partial(&app, &text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     state
         .whisper_preview_active
         .store(false, Ordering::SeqCst);
@@ -296,27 +333,20 @@ fn transcribe_meeting_chunk<'a>(
 /// Delegates to `meeting_feeder::run_meeting_feeder` with a Whisper transcription
 /// closure that uses `initial_prompt` context from the WAL file.
 pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, session_id: u64) {
-    let state = app.state::<crate::AppState>();
-    let whisper_ctx = &state.whisper_ctx;
-
-    crate::meeting_feeder::run_meeting_feeder(
-        app.clone(),
-        session_id,
-        "whisper-meeting",
-        None,
-        |samples, prev_text| {
-            let ctx_guard = whisper_ctx.lock().unwrap_or_else(|e| e.into_inner());
+    let app_for_closure = app.clone();
+    let transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send + 'static> =
+        Box::new(move |samples, prev_text| {
+            let state = app_for_closure.state::<crate::AppState>();
+            let ctx_guard = state.whisper_ctx.lock().unwrap_or_else(|e| e.into_inner());
             transcribe_meeting_chunk(
                 &ctx_guard,
                 samples,
                 &language,
-                if prev_text.is_empty() {
-                    None
-                } else {
-                    Some(prev_text)
-                },
+                if prev_text.is_empty() { None } else { Some(prev_text) },
             )
             .unwrap_or_default()
-        },
-    );
+        });
+    // Cap each segment at 120 s so the Final segment never exceeds ~12 s of
+    // Whisper inference time, keeping stop_meeting_mode well within the 5-min timeout.
+    crate::meeting_feeder::run_meeting_feeder(app, session_id, "whisper-meeting", Some(120 * 16_000), transcribe);
 }

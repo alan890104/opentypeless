@@ -160,7 +160,9 @@
   let isSwitchingSpinner: boolean = $derived.by(() => is('switching'));
 
   // ── Partial text display (live preview during Qwen3-ASR recording) ──
-  let showingPartial: boolean = $derived.by(() => is('recording') && partialText.length > 0);
+  // Also shown during 'transcribing' so the last partial stays visible while
+  // the backend finishes, and the final emit from finish_streaming can update it.
+  let showingPartial: boolean = $derived.by(() => (is('recording') || is('transcribing')) && partialText.length > 0);
   let displayLabelText: string = $derived(showingPartial ? partialText : labelText);
 
   // ── Waveform animation ──
@@ -295,7 +297,14 @@
   }
 
   function setTranscribing() {
+    // Preserve partialText so the overlay keeps showing the last streamed words
+    // while the backend finishes transcription.  The final transcription-partial
+    // event from finish_streaming will update it with the complete text.
+    // partialText is cleared by clearCommon() in all subsequent transitions
+    // (polishing, pasted, copied, error, etc.).
+    const savedPartial = partialText;
     clearCommon();
+    partialText = savedPartial;
     phase = 'transcribing';
   }
 
@@ -487,7 +496,11 @@
       }
     });
     const u5 = await onTranscriptionPartial((payload) => {
-      if (phase === 'recording') {
+      // Accept during 'transcribing' too: finish_streaming emits a final event
+      // after is_recording=false, which always arrives after the 'transcribing'
+      // status transition.  Accepting it here lets the overlay show the complete
+      // transcript (including the last 0–2 s) before the status clears.
+      if (phase === 'recording' || phase === 'transcribing') {
         partialText = payload.text;
       }
     });

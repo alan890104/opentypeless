@@ -243,9 +243,13 @@
     return '';
   }
 
+  let prevSttProvider = sttProvider;
   async function onSttCloudChange() {
-    // Reload API key from keychain when provider changes
-    await loadSttApiKey();
+    // Reload API key from keychain only when provider changes
+    if (sttProvider !== prevSttProvider) {
+      prevSttProvider = sttProvider;
+      await loadSttApiKey();
+    }
   }
 
   let sttCloudValid = $derived.by(() => {
@@ -486,9 +490,13 @@
     }
   }
 
+  let prevPolishProvider = polishProvider;
   async function onPolishCloudChange() {
-    // Reload API key from keychain when provider changes
-    await loadPolishApiKey();
+    // Reload API key from keychain only when provider changes
+    if (polishProvider !== prevPolishProvider) {
+      prevPolishProvider = polishProvider;
+      await loadPolishApiKey();
+    }
   }
 
   let polishCloudValid = $derived.by(() => {

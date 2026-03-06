@@ -296,6 +296,13 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String, session_id: u64)
     };
     tracing::info!("[streaming] finish: {:?}", final_text);
 
+    // Emit the final complete text as a last partial event so the overlay shows
+    // the full transcript (including the last 0–2 s of speech) before the
+    // "transcribing" status clears partialText.
+    if !final_text.is_empty() {
+        crate::emit_transcription_partial(&app, &final_text);
+    }
+
     if let Ok(mut r) = state.streaming_result.lock() {
         *r = if final_text.is_empty() { None } else { Some(final_text) };
     }
@@ -324,16 +331,19 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, s
         }
     }
 
-    let qwen3_ctx = &state.qwen3_asr_ctx;
+    let app_for_closure = app.clone();
+    let transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send + 'static> =
+        Box::new(move |samples, _prev_text| {
+            let state = app_for_closure.state::<crate::AppState>();
+            transcribe_with_cached_qwen3_asr(&state.qwen3_asr_ctx, samples, &model, &language)
+                .unwrap_or_default()
+        });
     crate::meeting_feeder::run_meeting_feeder(
-        app.clone(),
+        app,
         session_id,
         "qwen3-meeting",
         Some(120 * 16_000),
-        |samples, _prev_text| {
-            transcribe_with_cached_qwen3_asr(qwen3_ctx, samples, &model, &language)
-                .unwrap_or_default()
-        },
+        transcribe,
     );
 }
 

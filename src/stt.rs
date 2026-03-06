@@ -556,28 +556,21 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
     let mut cloud_config = cloud_config;
     cloud_config.language = language;
 
-    let state = app.state::<crate::AppState>();
-    let http_client = &state.http_client;
-
-    crate::meeting_feeder::run_meeting_feeder(
-        app.clone(),
-        session_id,
-        "cloud-meeting",
-        None,
-        |samples, prev_text| {
-            let prompt = if prev_text.is_empty() {
-                None
-            } else {
-                Some(prev_text)
-            };
-            match run_cloud_stt(&cloud_config, samples, http_client, prompt) {
+    let app_for_closure = app.clone();
+    let transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send + 'static> =
+        Box::new(move |samples, prev_text| {
+            let state = app_for_closure.state::<crate::AppState>();
+            let prompt = if prev_text.is_empty() { None } else { Some(prev_text) };
+            match run_cloud_stt(&cloud_config, samples, &state.http_client, prompt) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!("[cloud-meeting] transcription failed, skipping: {e}");
                     String::new()
                 }
             }
-        },
-    );
+        });
+    // Cap each segment at 120 s to bound per-segment cloud STT cost and keep
+    // stop_meeting_mode well within the 5-min timeout even on slow networks.
+    crate::meeting_feeder::run_meeting_feeder(app, session_id, "cloud-meeting", Some(120 * 16_000), transcribe);
 }
 
