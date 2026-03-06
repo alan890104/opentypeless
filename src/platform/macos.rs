@@ -322,7 +322,13 @@ pub fn is_now_playing() -> bool {
         let get_playing: GetPlayingFn = std::mem::transmute(sym);
 
         let sema = dispatch_semaphore_create(0);
-        let mut result: u8 = 0;
+
+        // Heap-allocate `result` so the captured pointer stays valid even if
+        // the 300 ms deadline fires before the GCD callback does.
+        // `MRMediaRemoteGetNowPlayingApplicationIsPlaying` copies the block to
+        // the heap (standard GCD contract), but `out` inside the copied block
+        // still points to the original allocation — it must be heap-stable.
+        let result: *mut u8 = Box::into_raw(Box::new(0u8));
 
         let mut block = Block {
             isa: &_NSConcreteStackBlock,
@@ -330,7 +336,7 @@ pub fn is_now_playing() -> bool {
             reserved: 0,
             invoke,
             descriptor: &DESC,
-            out: &mut result,
+            out: result,
             sema,
         };
 
@@ -339,9 +345,18 @@ pub fn is_now_playing() -> bool {
 
         // Wait up to 300 ms; if callback never fires assume nothing is playing.
         let deadline = dispatch_time(0 /* DISPATCH_TIME_NOW */, 300_000_000);
-        dispatch_semaphore_wait(sema, deadline);
+        let timed_out = dispatch_semaphore_wait(sema, deadline) != 0;
 
-        result != 0
+        if timed_out {
+            // Callback may still fire later; leak the 1-byte allocation so the
+            // write is safe. This path is hit only when the framework is frozen,
+            // which is extremely rare in practice.
+            false
+        } else {
+            let val = *result;
+            drop(Box::from_raw(result));
+            val != 0
+        }
     }
 }
 
