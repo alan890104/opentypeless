@@ -414,7 +414,7 @@
               class="polish-btn"
               onclick={handlePolish}
               disabled={polishing || selectedNote!.is_recording || !selectedNote!.transcript}
-              title={t(polishing ? 'meeting.polishing' : 'meeting.polish')}
+              title={t(polishing ? 'meeting.polishing' : selectedNote!.summary ? 'meeting.repolish' : 'meeting.polish')}
             >
               {#if polishing}
                 <span class="spinner-inline"></span>

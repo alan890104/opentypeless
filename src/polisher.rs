@@ -1036,8 +1036,8 @@ fn polish_text_inner(
     user_text.push_str(&instructions);
 
     match config.mode {
-        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, &user_text, client),
-        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, &user_text),
+        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, &user_text, client, None),
+        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, &user_text, None),
     }
 }
 
@@ -1047,6 +1047,7 @@ fn run_cloud_inference(
     system_prompt: &str,
     raw_text: &str,
     client: &reqwest::blocking::Client,
+    max_tokens: Option<u32>,
 ) -> Result<String, String> {
     if cloud.api_key.is_empty() {
         return Err("Cloud API key is not set".to_string());
@@ -1075,7 +1076,7 @@ fn run_cloud_inference(
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": raw_text }
         ],
-        "max_completion_tokens": 1024
+        "max_completion_tokens": max_tokens.unwrap_or(1024)
     });
     // GPT-5 series does not support temperature; only set it for other models
     if !model_id.contains("gpt-5") {
@@ -1130,6 +1131,7 @@ fn run_llm_inference(
     config: &PolishConfig,
     system_prompt: &str,
     raw_text: &str,
+    max_tokens: Option<usize>,
 ) -> Result<String, String> {
     let model_path = model_dir.join(config.model.filename());
     if !model_path.exists() {
@@ -1204,7 +1206,7 @@ fn run_llm_inference(
         .map_err(|e| format!("Sample: {}", e))?;
 
     // Generation loop
-    let max_tokens: usize = 512;
+    let max_tokens: usize = max_tokens.unwrap_or(512);
     let gen_start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(15);
     let mut output_token_ids: Vec<u32> = Vec::new();
@@ -1261,10 +1263,11 @@ pub fn polish_with_prompt(
     system_prompt: &str,
     raw_text: &str,
     client: &reqwest::blocking::Client,
+    max_tokens: Option<u32>,
 ) -> Result<String, String> {
     let raw_output = match config.mode {
-        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, raw_text, client)?,
-        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, raw_text)?,
+        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, raw_text, client, max_tokens)?,
+        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, raw_text, max_tokens.map(|t| t as usize))?,
     };
     let (cleaned, _) = extract_think_tags(&raw_output);
     Ok(cleaned.trim().to_string())
@@ -1308,8 +1311,8 @@ pub fn edit_text_by_instruction(
     ));
 
     let raw_output = match config.mode {
-        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, &user_text, client)?,
-        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, &user_text)?,
+        PolishMode::Cloud => run_cloud_inference(&config.cloud, system_prompt, &user_text, client, None)?,
+        PolishMode::Local => run_llm_inference(llm_cache, model_dir, config, system_prompt, &user_text, None)?,
     };
 
     let (cleaned, _reasoning) = extract_think_tags(&raw_output);

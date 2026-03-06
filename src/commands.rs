@@ -638,6 +638,7 @@ pub async fn test_polish(
             system_prompt,
             &default_user,
             &state.http_client,
+            None,
         )?;
 
         let custom_user = format!("<speech>\n{}\n</speech>\n\n{}", test_text, custom_instructions);
@@ -648,6 +649,7 @@ pub async fn test_polish(
             system_prompt,
             &custom_user,
             &state.http_client,
+            None,
         )?;
 
         Ok(TestPolishResult {
@@ -783,6 +785,7 @@ Return ONLY the JSON object."#
             system_prompt,
             &user_text,
             &state.http_client,
+            None,
         )?;
 
         parse_generated_rule(&result)
@@ -2633,6 +2636,7 @@ Write in {lang_name}."#
             system_prompt,
             &user_text,
             &state.http_client,
+            Some(4096),
         )?;
 
         Ok::<_, String>(parse_polish_json(&result, &fallback_title))

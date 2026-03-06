@@ -371,6 +371,7 @@
   "meeting.copied": "Copied!",
   "meeting.copyAsMarkdown": "Copy as Markdown",
   "meeting.polish": "Generate Summary",
+  "meeting.repolish": "Regenerate Summary",
   "meeting.polishing": "Generating…",
   "meeting.tabTranscript": "Transcript",
   "meeting.tabSummary": "Summary",

@@ -368,5 +368,8 @@
   "meeting.noContent": "暂无转录内容",
   "meeting.copyTranscript": "复制转录内容",
   "meeting.copied": "已复制！",
+  "meeting.polish": "生成摘要",
+  "meeting.repolish": "重新生成摘要",
+  "meeting.polishing": "生成中…",
   "overlay.meetingStopped": "会议已保存"
 }
