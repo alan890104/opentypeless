@@ -1075,7 +1075,14 @@ pub fn run() {
                         // Always reset the guard so future events can trigger reconnect.
                         state.reconnecting.store(false, Ordering::SeqCst);
                         match result {
-                            Ok(()) => tracing::info!("Mic stream reconnected after input device change"),
+                            Ok(()) => {
+                                tracing::info!("Mic stream reconnected after input device change");
+                                // Reset idle clock so the watcher doesn't immediately
+                                // close the freshly reconnected stream.
+                                if let Ok(mut t) = state.last_recording_end.lock() {
+                                    *t = None;
+                                }
+                            }
                             Err(e) => tracing::error!("Mic stream reconnect failed: {}", e),
                         }
                     });

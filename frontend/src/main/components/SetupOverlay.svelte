@@ -974,6 +974,7 @@
           </div>
           <div class="setup-title">{t('setup.activatingTitle')}</div>
           <div class="setup-desc">{t('setup.activatingDesc')}</div>
+          <button class="setup-skip-link" onclick={() => goToPolishChoice()}>{t('setup.llmSkip')}</button>
         </div>
       {/if}
 
@@ -992,6 +993,7 @@
           </div>
           <div class="setup-title">{t('setup.llmActivatingTitle')}</div>
           <div class="setup-desc">{t('setup.llmActivatingDesc')}</div>
+          <button class="setup-skip-link" onclick={() => finishSetup()}>{t('setup.llmSkip')}</button>
         </div>
       {/if}
 
