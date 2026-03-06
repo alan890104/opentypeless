@@ -232,6 +232,12 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String, session_id: u64)
             delta_raw
         };
 
+        // Skip silence — avoid feeding non-speech frames to the streaming engine,
+        // which can cause hallucinations and wastes GPU inference time.
+        if !crate::transcribe::has_speech_vad(&state.vad_ctx, &delta_16k, 0.003) {
+            continue;
+        }
+
         // Run incremental inference (engine lock held only during this call).
         let partial = {
             let guard = state.qwen3_asr_ctx.lock().unwrap_or_else(|e| e.into_inner());

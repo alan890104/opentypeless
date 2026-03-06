@@ -70,7 +70,7 @@ All `#[tauri::command]` functions exposed to the frontend:
 - **Utilities**: `get_app_icon`, `trigger_undo`, `copy_image_to_clipboard`, `is_dev_mode`, `export_diagnostic_log`
 
 #### `src/stt.rs` — STT configuration
-- **`SttConfig`** — fields: `mode` (SttMode: Local or Cloud), `cloud` (SttCloudConfig), `whisper_model` (WhisperModel), `local_engine` (LocalSttEngine: Whisper or Qwen3Asr), `qwen3_asr_model` (Qwen3AsrModel: Qwen3Asr1_7B or Qwen3Asr0_6B), `language` (BCP-47 string, "auto" or specific like "zh-TW"), `vad_enabled` (bool, Silero VAD toggle).
+- **`SttConfig`** — fields: `mode` (SttMode: Local or Cloud), `cloud` (SttCloudConfig), `whisper_model` (WhisperModel), `local_engine` (LocalSttEngine: Whisper or Qwen3Asr), `qwen3_asr_model` (Qwen3AsrModel: Qwen3Asr1_7B or Qwen3Asr0_6B), `language` (BCP-47 string, "auto" or specific like "zh-TW").
 - **`SttCloudConfig`** — fields: `provider` (SttProvider: Deepgram/Groq/OpenAi/Azure/Custom), `api_key` (#[serde(skip)]), `endpoint`, `model_id`, `language`.
 - **`LocalSttEngine`** — enum: `Whisper` (default), `Qwen3Asr`.
 - **`Qwen3AsrModel`** — enum: `Qwen3Asr1_7B` (default, ~1.7 GB), `Qwen3Asr0_6B` (~0.6 GB). Model files stored in `~/.sumi/models/qwen3-asr-{1.7b,0.6b}/`.
@@ -179,7 +179,7 @@ Hotkeys are stored as `"Modifier+...+KeyCode"`, e.g. `"Alt+KeyZ"`. Modifiers: `A
 `qwen3-asr` crate (v0.2.1, with `metal` feature for GPU acceleration) provides an alternative local STT engine. Two model variants: 1.7B (default) and 0.6B. Models downloaded from HuggingFace on first use. The `AsrInference` instance is cached in `AppState` via `Qwen3AsrCache`. Supports both batch transcription and streaming mode (with `initial_text` for cross-session context). Selected via `stt.local_engine = Qwen3Asr`.
 
 ### Silero VAD
-Optional Silero VAD model (`ggml-silero-v6.2.0.bin`) downloaded separately. Filters out non-speech segments before transcription (both Whisper and Qwen3-ASR). Also used for silence detection in meeting mode feeders. Falls back to RMS-based silence trimming if not downloaded. Controlled by `stt.vad_enabled`.
+Optional Silero VAD model (`ggml-silero-v6.2.0.bin`) downloaded separately. Filters out non-speech segments before transcription (both Whisper and Qwen3-ASR). Also used for silence detection in meeting mode feeders and as a gate in the Qwen3-ASR streaming feeder. Falls back to RMS-based silence trimming if not downloaded. Always-on when the model file is present (no user toggle).
 
 ### LLM Polish Model
 `candle` (HuggingFace's pure Rust ML framework, with `metal` and `cuda` features for GPU acceleration) loads quantized GGUF models. Supported models: Llama 3 Taiwan 8B (Q4_K_M, ~4.9 GB), Qwen 2.5 7B (Q4_K_M, ~4.7 GB), and Qwen 3 8B (Q4_K_M, ~5.0 GB). Model download progress reported via `llm-model-download-progress` Tauri events. Multi-model management with per-model download/switch.
