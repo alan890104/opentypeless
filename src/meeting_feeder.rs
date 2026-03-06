@@ -113,7 +113,7 @@ fn run_meeting_worker(
         let current_session = state.meeting_session.load(Ordering::SeqCst);
         if current_session != session_id {
             tracing::warn!(
-                "[{label}] worker: stale session ({session_id} vs {current_session}) — draining without processing",
+                "[{label}] worker: stale session ({session_id} vs {current_session}) — aborting, remaining segments will be dropped",
             );
             break;
         }
@@ -325,15 +325,15 @@ pub(crate) fn run_meeting_feeder(
     let _ = worker.join();
     tracing::info!("[{label}] feeder finished — transcript persisted to WAL file");
 
-    // Signal completion. stop_meeting_mode waits on meeting_feeder_done so it
-    // reads the WAL only after this point, guaranteeing the complete transcript.
+    // Signal completion only if we still own the session. A stale feeder from a
+    // timed-out session (>5 min segment) must not set meeting_feeder_done=true
+    // or notify stop_meeting_mode for a newer session, which would cause it to
+    // finalize the WAL before session N+1's worker has written anything.
+    // In the normal path meeting_session always equals session_id here.
     let state = app.state::<crate::AppState>();
-    state.meeting_feeder_done.store(true, Ordering::SeqCst);
-    // Only clear meeting_active if we still own the session; a new meeting may
-    // have started while the worker was draining its final segment.
     if state.meeting_session.load(Ordering::SeqCst) == session_id {
+        state.meeting_feeder_done.store(true, Ordering::SeqCst);
         state.meeting_active.store(false, Ordering::SeqCst);
+        state.meeting_done_cv.notify_all();
     }
-    // Wake stop_meeting_mode immediately (replaces 50ms busy-poll).
-    state.meeting_done_cv.notify_all();
 }

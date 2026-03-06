@@ -228,10 +228,11 @@ pub(crate) fn run_whisper_preview_loop(app: AppHandle, language: String, session
     // accumulated since the last tick so the overlay shows the complete
     // transcript before the "transcribing" status clears partialText.
     // Skip if session has already advanced (zombie feeder).
-    if state.whisper_preview_session.load(Ordering::SeqCst) == session_id
-        && !feeder.buffer.is_empty()
-    {
-        // Read any trailing audio that arrived after the last tick.
+    //
+    // Trailing audio is read BEFORE the is_empty check: if the feeder buffer
+    // is empty but audio arrived in state.buffer after the last tick, we still
+    // want to run inference on it.
+    if state.whisper_preview_session.load(Ordering::SeqCst) == session_id {
         let trailing_raw: Vec<f32> = {
             let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
             let tail = last_tail.min(buf.len());
@@ -246,12 +247,14 @@ pub(crate) fn run_whisper_preview_loop(app: AppHandle, language: String, session
             feeder.push_samples(&trailing_16k);
         }
 
-        if let Ok(ctx_guard) = state.whisper_ctx.try_lock() {
-            if ctx_guard.is_some() {
-                if let Ok(text) = feeder.infer(&ctx_guard, &language) {
-                    if !text.is_empty() {
-                        tracing::debug!("[whisper-preview] final partial: {:?}", text);
-                        crate::emit_transcription_partial(&app, &text);
+        if !feeder.buffer.is_empty() {
+            if let Ok(ctx_guard) = state.whisper_ctx.try_lock() {
+                if ctx_guard.is_some() {
+                    if let Ok(text) = feeder.infer(&ctx_guard, &language) {
+                        if !text.is_empty() {
+                            tracing::debug!("[whisper-preview] final partial: {:?}", text);
+                            crate::emit_transcription_partial(&app, &text);
+                        }
                     }
                 }
             }
