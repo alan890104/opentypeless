@@ -310,13 +310,13 @@ pub fn simulate_media_play_pause() {
 
         let zero = NSPoint { x: 0.0, y: 0.0 };
 
-        // key-down  (data1 low byte 0x0b = pressed, no modifier)
+        // key-down  (NX_KEYDOWN = 0x0a → flags byte in data1)
         let ev_down = make_event(
             ns_event_class, sel_make,
             NS_EVENT_TYPE_SYSTEM_DEFINED, zero,
             0xa00, 0.0, 0, std::ptr::null_mut(),
             NX_SUBTYPE_AUX_CONTROL_BUTTONS,
-            (NX_KEYTYPE_PLAY << 16) | 0x0b00,
+            (NX_KEYTYPE_PLAY << 16) | 0x0a00,
             -1,
         );
         if !ev_down.is_null() {
@@ -324,11 +324,11 @@ pub fn simulate_media_play_pause() {
             if !cg.is_null() { CGEventPost(0 /* kCGHIDEventTap */, cg); }
         }
 
-        // key-up  (data1 low byte 0x0b | 0x01 = released)
+        // key-up  (NX_KEYUP = 0x0b, released-bit 0x01)
         let ev_up = make_event(
             ns_event_class, sel_make,
             NS_EVENT_TYPE_SYSTEM_DEFINED, zero,
-            0xa00, 0.0, 0, std::ptr::null_mut(),
+            0xb00, 0.0, 0, std::ptr::null_mut(),
             NX_SUBTYPE_AUX_CONTROL_BUTTONS,
             (NX_KEYTYPE_PLAY << 16) | 0x0b01,
             -1,
