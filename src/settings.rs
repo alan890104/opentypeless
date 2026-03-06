@@ -36,15 +36,15 @@ impl Default for Settings {
     fn default() -> Self {
         let (hotkey, edit_hotkey, meeting_hotkey) = if is_debug() {
             (
-                "Alt+Super+KeyZ".to_string(),
-                Some("Control+Alt+Super+KeyZ".to_string()),
-                Some("Shift+Alt+Super+KeyZ".to_string()),
+                "Alt+Super+KeyV".to_string(),
+                Some("Alt+Super+KeyE".to_string()),
+                Some("Alt+Super+KeyM".to_string()),
             )
         } else {
             (
-                "Alt+KeyZ".to_string(),
-                Some("Control+Alt+KeyZ".to_string()),
-                Some("Shift+Alt+KeyZ".to_string()),
+                "Alt+KeyV".to_string(),
+                Some("Alt+KeyE".to_string()),
+                Some("Alt+KeyM".to_string()),
             )
         };
         Self {

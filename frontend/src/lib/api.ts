@@ -43,9 +43,6 @@ export const updateMeetingHotkey = (hotkey: string | null) =>
 
 export const resetSettings = () => invoke<void>('reset_settings');
 
-export const getDefaultPrompt = () =>
-  invoke<string>('get_default_prompt');
-
 export const getDefaultPromptRules = (language?: string) =>
   invoke<PromptRule[]>('get_default_prompt_rules', { language: language ?? null });
 

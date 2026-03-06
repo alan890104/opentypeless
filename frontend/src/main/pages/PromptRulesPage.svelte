@@ -9,7 +9,7 @@
     getPolishConfig,
   } from '$lib/stores/settings.svelte';
   import { setCurrentPage, setHighlightSection, showConfirm } from '$lib/stores/ui.svelte';
-  import { getDefaultPrompt, getDefaultPromptRules } from '$lib/api';
+  import { getDefaultPromptRules } from '$lib/api';
   import RuleGridCard from '../components/RuleGridCard.svelte';
   import RuleEditorModal from '../components/RuleEditorModal.svelte';
 
@@ -20,7 +20,6 @@
     setCurrentPage('settings');
   }
 
-  let basePrompt = $state('');
   let editorVisible = $state(false);
   let editingIndex = $state(-1);
 
@@ -41,7 +40,6 @@
 
   onMount(async () => {
     await initDefaultRules();
-    await loadBasePrompt();
   });
 
   async function initDefaultRules() {
@@ -78,14 +76,6 @@
       }
     } catch (e) {
       console.error('Failed to load default prompt rules:', e);
-    }
-  }
-
-  async function loadBasePrompt() {
-    try {
-      basePrompt = await getDefaultPrompt();
-    } catch (e) {
-      console.error('Failed to load base prompt:', e);
     }
   }
 
@@ -160,19 +150,6 @@
       <button class="reset-defaults-btn" onclick={handleResetToDefaults}>{t('promptRules.resetDefaults')}</button>
     </div>
     <div class="prompt-rules-desc">{t('promptRules.desc')}</div>
-
-    <!-- Base Prompt Card -->
-    {#if basePrompt}
-      <div class="default-prompt-card">
-        <div class="prompt-rule-top">
-          <span class="prompt-rule-name">
-            <span class="default-prompt-badge">{t('promptRules.basePrompt')}</span>
-          </span>
-        </div>
-        <div class="default-prompt-desc">{t('promptRules.basePromptDesc')}</div>
-        <div class="prompt-rule-prompt">{basePrompt}</div>
-      </div>
-    {/if}
 
     <!-- Rule Grid -->
     <div class="prompt-rules-grid">
@@ -295,47 +272,6 @@
     font-size: 13px;
     color: var(--text-secondary);
     margin-bottom: 16px;
-  }
-
-  .default-prompt-card {
-    background: var(--bg-sidebar);
-    border-radius: var(--radius-md);
-    padding: 12px;
-    margin-bottom: 12px;
-    border: 1px solid rgba(59, 130, 246, 0.2);
-  }
-
-  .prompt-rule-top {
-    margin-bottom: 4px;
-  }
-
-  .prompt-rule-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .default-prompt-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: rgba(59, 130, 246, 0.1);
-    color: var(--accent-blue);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .default-prompt-desc {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-  }
-
-  .prompt-rule-prompt {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
   .prompt-rules-grid {

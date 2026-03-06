@@ -3,16 +3,18 @@
   import type { PromptRule, MatchType, MatchCondition } from '$lib/types';
   import { t } from '$lib/stores/i18n.svelte';
   import { getHotkey } from '$lib/stores/settings.svelte';
-  import { formatHotkeyDisplay, RULE_ICON_SVG, ICON_PICKER_LIST, detectRuleIconKey } from '$lib/constants';
+  import { DEFAULT_HOTKEY, formatHotkeyDisplay, RULE_ICON_SVG, ICON_PICKER_LIST, detectRuleIconKey } from '$lib/constants';
   import {
     setVoiceRuleMode,
     generateRuleFromDescription,
+    getDefaultPromptRules,
     onVoiceRuleStatus,
     onVoiceRuleLevels,
     onVoiceRuleTranscript,
   } from '$lib/api';
   import type { UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentRules } from '$lib/stores/settings.svelte';
+  import { getLocale } from '$lib/stores/i18n.svelte';
 
   let {
     visible,
@@ -45,6 +47,9 @@
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let waveAnimId: number | null = null;
 
+  // Default rule matching current profile (for reset)
+  let matchingDefault = $state<PromptRule | null>(null);
+
   // Refs for validation focus
   let matchValueInput: HTMLInputElement | undefined = $state();
   let promptTextarea: HTMLTextAreaElement | undefined = $state();
@@ -53,12 +58,13 @@
     editIndex >= 0 ? t('settings.polish.editRule') : t('settings.polish.addRule')
   );
 
-  const hotkey = $derived(getHotkey() || 'Alt+KeyZ');
+  const hotkey = $derived(getHotkey() || DEFAULT_HOTKEY);
   const hotkeyDisplay = $derived(formatHotkeyDisplay(hotkey));
 
   // Populate form when modal opens
   $effect(() => {
     if (visible) {
+      matchingDefault = null;
       if (editIndex >= 0) {
         const rules = getCurrentRules();
         const rule = rules[editIndex];
@@ -69,6 +75,7 @@
           prompt = rule.prompt || '';
           iconKey = rule.icon || undefined;
           altMatches = (rule.alt_matches || []).map((a) => ({ ...a }));
+          findMatchingDefault(rule);
         }
       } else {
         name = '';
@@ -85,6 +92,36 @@
       disableVoiceMode();
     }
   });
+
+  async function findMatchingDefault(rule: PromptRule) {
+    try {
+      const defaults = await getDefaultPromptRules(getLocale());
+      const keys = new Set<string>();
+      keys.add(`${rule.match_type}::${rule.match_value}`);
+      for (const alt of rule.alt_matches || []) {
+        keys.add(`${alt.match_type}::${alt.match_value}`);
+      }
+      matchingDefault = defaults.find((d) => {
+        if (keys.has(`${d.match_type}::${d.match_value}`)) return true;
+        for (const alt of d.alt_matches || []) {
+          if (keys.has(`${alt.match_type}::${alt.match_value}`)) return true;
+        }
+        return false;
+      }) ?? null;
+    } catch {
+      // ignore
+    }
+  }
+
+  function resetToDefault() {
+    if (!matchingDefault) return;
+    name = matchingDefault.name || '';
+    matchType = matchingDefault.match_type || 'app_name';
+    matchValue = matchingDefault.match_value || '';
+    prompt = matchingDefault.prompt || '';
+    iconKey = matchingDefault.icon || undefined;
+    altMatches = (matchingDefault.alt_matches || []).map((a) => ({ ...a }));
+  }
 
   async function enableVoiceMode() {
     if (voiceModeActive) return;
@@ -398,8 +435,6 @@
             bind:value={matchValue}
             placeholder={t('settings.polish.ruleMatchValuePlaceholder')}
           />
-          <!-- no remove button for primary -->
-          <div class="match-condition-spacer"></div>
         </div>
 
         <!-- Alt conditions -->
@@ -440,8 +475,13 @@
       </div>
 
       <div class="rule-editor-actions">
-        <button class="rule-editor-cancel" onclick={onclose}>{t('settings.polish.ruleCancel')}</button>
-        <button class="rule-editor-save" onclick={handleSave}>{t('settings.polish.ruleSave')}</button>
+        {#if matchingDefault}
+          <button class="rule-editor-reset" onclick={resetToDefault}>{t('promptRules.resetOne')}</button>
+        {/if}
+        <div class="rule-editor-actions-right">
+          <button class="rule-editor-cancel" onclick={onclose}>{t('settings.polish.ruleCancel')}</button>
+          <button class="rule-editor-save" onclick={handleSave}>{t('settings.polish.ruleSave')}</button>
+        </div>
       </div>
     </div>
   </div>
@@ -505,21 +545,32 @@
     margin-bottom: 6px;
   }
 
-  .rule-editor-input {
-    width: 100%;
-    padding: 8px 10px;
+  .rule-editor-input,
+  .match-condition-select,
+  .match-condition-input {
+    height: 34px;
+    padding: 0 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--bg-primary);
     color: var(--text-primary);
     font-family: 'Inter', sans-serif;
     font-size: 13px;
+    line-height: 34px;
     outline: none;
     transition: border-color 0.15s ease;
     box-sizing: border-box;
+    -webkit-appearance: none;
+    appearance: none;
   }
 
-  .rule-editor-input:focus {
+  .rule-editor-input {
+    width: 100%;
+  }
+
+  .rule-editor-input:focus,
+  .match-condition-select:focus,
+  .match-condition-input:focus {
     border-color: var(--accent-blue);
   }
 
@@ -551,13 +602,19 @@
 
   .rule-editor-actions {
     display: flex;
-    justify-content: flex-end;
-    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
     margin-top: 18px;
   }
 
-  .rule-editor-actions button {
+  .rule-editor-actions-right {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+  }
 
+  .rule-editor-actions button,
+  .rule-editor-actions-right button {
     padding: 7px 18px;
     border-radius: var(--radius-sm);
     font-family: 'Inter', sans-serif;
@@ -566,6 +623,17 @@
     cursor: pointer;
     transition: all 0.15s ease;
     border: none;
+  }
+
+  .rule-editor-reset {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  .rule-editor-reset:hover {
+    color: var(--accent-blue);
   }
 
   .rule-editor-cancel {
@@ -729,44 +797,11 @@
   .match-condition-select {
     width: 120px;
     flex-shrink: 0;
-    padding: 8px 10px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-family: 'Inter', sans-serif;
-    font-size: 13px;
-    outline: none;
-    transition: border-color 0.15s ease;
-    box-sizing: border-box;
-  }
-
-  .match-condition-select:focus {
-    border-color: var(--accent-blue);
   }
 
   .match-condition-input {
     flex: 1;
-    padding: 8px 10px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-family: 'Inter', sans-serif;
-    font-size: 13px;
-    outline: none;
-    transition: border-color 0.15s ease;
-    box-sizing: border-box;
     min-width: 0;
-  }
-
-  .match-condition-input:focus {
-    border-color: var(--accent-blue);
-  }
-
-  .match-condition-spacer {
-    width: 26px;
-    flex-shrink: 0;
   }
 
   .match-condition-remove {
@@ -828,7 +863,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 10px;
+    height: 34px;
+    padding: 0 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -840,8 +876,8 @@
   }
 
   .icon-picker-preview {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -849,8 +885,8 @@
   }
 
   .icon-picker-preview :global(svg) {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
   }
 
   .icon-picker-label {

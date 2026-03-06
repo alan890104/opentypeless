@@ -16,11 +16,12 @@ import type {
   Qwen3AsrModelId,
 } from '../types';
 import * as api from '../api';
+import { DEFAULT_HOTKEY } from '../constants';
 
 // ── Reactive settings state ──
 
 let settings = $state<Settings>({
-  hotkey: 'Alt+KeyZ',
+  hotkey: DEFAULT_HOTKEY,
   auto_paste: true,
   polish: {
     enabled: false,

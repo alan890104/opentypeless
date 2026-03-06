@@ -1,5 +1,11 @@
 import type { CloudProvider, SttProvider, MatchType } from './types';
 
+// ── Default hotkeys (must match backend Settings::default) ──
+
+export const DEFAULT_HOTKEY = 'Alt+KeyV';
+export const DEFAULT_EDIT_HOTKEY = 'Alt+KeyE';
+export const DEFAULT_MEETING_HOTKEY = 'Alt+KeyM';
+
 // ── Modifier display symbols (platform-aware) ──
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform?.toLowerCase().includes('mac');
