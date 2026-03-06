@@ -317,8 +317,9 @@
         try {
           const vadStatus = await checkVadModelStatus();
           if (vadStatus.downloaded) {
-            // Both model and VAD ready — show activation spinner
-            activateSttModel();
+            // Fire-and-forget: activateSttModel sets currentState='activating'
+            // synchronously on its first line, so the UI transitions immediately.
+            void activateSttModel();
             return;
           }
         } catch {}
@@ -1000,7 +1001,7 @@
           </div>
           <div class="setup-title">{t('setup.llmActivatingTitle')}</div>
           <div class="setup-desc">{t('setup.llmActivatingDesc')}</div>
-          <button class="setup-skip-link" onclick={() => finishSetup()}>{t('setup.llmSkip')}</button>
+          <button class="setup-skip-link" onclick={() => { currentState = 'complete'; finishSetup(); }}>{t('setup.llmSkip')}</button>
         </div>
       {/if}
 
