@@ -1265,13 +1265,11 @@ pub fn run() {
                                 &state.audio_thread,
                                 &state.mic_available,
                             );
-                            // Reset the idle clock so the watcher doesn't
-                            // immediately re-close if mic becomes available again
-                            // (e.g. OS hot-plug triggers try_reconnect_audio without
-                            // a user recording — the timeout restarts from now).
-                            if let Ok(mut t) = state.last_recording_end.lock() {
-                                *t = Some(Instant::now());
-                            }
+                            // After close, mic_available=false so subsequent polls
+                            // skip via the guard above. If a hot-plug reconnect
+                            // happens, the device-change listener resets
+                            // last_recording_end to None so the watcher won't
+                            // immediately re-close until the user records again.
                         }
                     }
                 });

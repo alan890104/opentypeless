@@ -825,9 +825,13 @@
                   onclick={() => { selectedLocalEngine = 'whisper'; selectedSttModel = model.id; }}
                 >
                   <div class="setup-model-radio" class:downloaded={model.downloaded}>
-                    {#if model.downloaded}
+                    {#if model.downloaded && selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
                       <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                         <path d="M1.5 5.5L4 8L8.5 2.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else if model.downloaded}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.5L4 8L8.5 2.5" stroke="rgba(255,255,255,0.45)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                       </svg>
                     {:else if selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
                       <div class="setup-model-radio-dot"></div>
@@ -853,9 +857,13 @@
                   onclick={() => { selectedLocalEngine = 'qwen3_asr'; selectedQwen3Model = model.id; }}
                 >
                   <div class="setup-model-radio" class:downloaded={model.downloaded}>
-                    {#if model.downloaded}
+                    {#if model.downloaded && selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
                       <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                         <path d="M1.5 5.5L4 8L8.5 2.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else if model.downloaded}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.5L4 8L8.5 2.5" stroke="rgba(255,255,255,0.45)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                       </svg>
                     {:else if selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
                       <div class="setup-model-radio-dot"></div>
@@ -1034,9 +1042,13 @@
                   onclick={() => selectedPolishModel = model.id}
                 >
                   <div class="setup-model-radio" class:downloaded={model.downloaded}>
-                    {#if model.downloaded}
+                    {#if model.downloaded && selectedPolishModel === model.id}
                       <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                         <path d="M1.5 5.5L4 8L8.5 2.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else if model.downloaded}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.5L4 8L8.5 2.5" stroke="rgba(255,255,255,0.45)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                       </svg>
                     {:else if selectedPolishModel === model.id}
                       <div class="setup-model-radio-dot"></div>
