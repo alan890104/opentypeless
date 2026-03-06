@@ -369,6 +369,10 @@
       }
     } catch (e) {
       console.error('Failed to activate STT model:', e);
+      errorMessage = String(e);
+      lastFailedDownload = 'stt';
+      currentState = 'error';
+      return;
     }
     goToPolishChoice();
   }
