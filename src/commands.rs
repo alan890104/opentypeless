@@ -67,20 +67,20 @@ pub fn save_settings(
 pub fn update_hotkey(
     app: AppHandle,
     state: State<'_, AppState>,
-    new_hotkey: String,
+    hotkey: String,
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     let shortcut =
-        parse_hotkey_string(&new_hotkey).ok_or_else(|| "Invalid hotkey string".to_string())?;
+        parse_hotkey_string(&hotkey).ok_or_else(|| "Invalid hotkey string".to_string())?;
 
     // Check for conflicts with existing edit/meeting hotkeys before touching shortcuts.
     {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        if settings.edit_hotkey.as_deref() == Some(new_hotkey.as_str()) {
+        if settings.edit_hotkey.as_deref() == Some(hotkey.as_str()) {
             return Err("Primary hotkey must differ from edit hotkey".to_string());
         }
-        if settings.meeting_hotkey.as_deref() == Some(new_hotkey.as_str()) {
+        if settings.meeting_hotkey.as_deref() == Some(hotkey.as_str()) {
             return Err("Primary hotkey must differ from meeting hotkey".to_string());
         }
     }
@@ -94,7 +94,7 @@ pub fn update_hotkey(
         .map_err(|e| format!("Failed to register shortcut: {}", e))?;
 
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.hotkey = new_hotkey.clone();
+    settings.hotkey = hotkey.clone();
     settings::save_settings_to_disk(&settings);
 
     if let Some(ref edit_hk) = settings.edit_hotkey {
@@ -113,7 +113,7 @@ pub fn update_hotkey(
         }
     }
 
-    let label = hotkey_display_label(&new_hotkey);
+    let label = hotkey_display_label(&hotkey);
     if let Some(tray) = app.tray_by_id("main-tray") {
         let tooltip = if settings::is_debug() {
             format!("Sumi [Dev] – {} to record", label)
@@ -123,10 +123,7 @@ pub fn update_hotkey(
         let _ = tray.set_tooltip(Some(&tooltip));
     }
 
-    tracing::info!(
-        "Hotkey updated to: {} ({})",
-        new_hotkey, label
-    );
+    tracing::info!("Hotkey updated to: {} ({})", hotkey, label);
     Ok(())
 }
 
@@ -134,7 +131,7 @@ pub fn update_hotkey(
 pub fn update_edit_hotkey(
     app: AppHandle,
     state: State<'_, AppState>,
-    new_edit_hotkey: Option<String>,
+    hotkey: Option<String>,
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -142,7 +139,7 @@ pub fn update_edit_hotkey(
     // all shortcuts permanently unregistered (mirrors update_meeting_hotkey).
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
 
-    if let Some(ref hk) = new_edit_hotkey {
+    if let Some(ref hk) = hotkey {
         if !hk.is_empty() {
             let _ = parse_hotkey_string(hk)
                 .ok_or_else(|| "Invalid edit hotkey string".to_string())?;
@@ -155,7 +152,7 @@ pub fn update_edit_hotkey(
             }
         }
     }
-    settings.edit_hotkey = new_edit_hotkey.filter(|s| !s.is_empty());
+    settings.edit_hotkey = hotkey.filter(|s| !s.is_empty());
 
     // Unregister only after validation succeeds.
     app.global_shortcut()
