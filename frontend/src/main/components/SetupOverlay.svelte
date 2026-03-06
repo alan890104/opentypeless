@@ -630,6 +630,7 @@
 
   async function activatePolishModel() {
     currentState = 'llmActivating';
+    startLlmActivatingTimer();
     try {
       await switchPolishModel(selectedPolishModel);
     } catch (e) {
@@ -638,10 +639,29 @@
       lastFailedStep = 'llmActivate';
       currentState = 'error';
       return;
+    } finally {
+      stopLlmActivatingTimer();
     }
     setPolishMode('local');
     setPolishEnabled(true);
     finishSetup();
+  }
+
+  // ── LLM Activating elapsed timer ──
+
+  let llmActivatingElapsed = $state(0);
+  let llmActivatingTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startLlmActivatingTimer() {
+    llmActivatingElapsed = 0;
+    llmActivatingTimer = setInterval(() => { llmActivatingElapsed += 1; }, 1000);
+  }
+
+  function stopLlmActivatingTimer() {
+    if (llmActivatingTimer) {
+      clearInterval(llmActivatingTimer);
+      llmActivatingTimer = null;
+    }
   }
 
   // ── Error state ──
@@ -711,6 +731,7 @@
     if (vadDownloadUnlisten) { vadDownloadUnlisten(); vadDownloadUnlisten = null; }
     if (qwen3DownloadUnlisten) { qwen3DownloadUnlisten(); qwen3DownloadUnlisten = null; }
     if (llmDownloadUnlisten) { llmDownloadUnlisten(); llmDownloadUnlisten = null; }
+    stopLlmActivatingTimer();
   });
 </script>
 
@@ -997,6 +1018,7 @@
           </div>
           <div class="setup-title">{t('setup.llmActivatingTitle')}</div>
           <div class="setup-desc">{t('setup.llmActivatingDesc')}</div>
+          <div class="setup-elapsed">{llmActivatingElapsed}s</div>
           <button class="setup-skip-link" onclick={() => finishSetup()}>{t('setup.llmSkip')}</button>
         </div>
       {/if}
@@ -1396,6 +1418,13 @@
   .setup-download-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .setup-elapsed {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
   }
 
   .setup-btn-spinner {
