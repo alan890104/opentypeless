@@ -627,6 +627,10 @@
       await switchPolishModel(selectedPolishModel);
     } catch (e) {
       console.error('Failed to activate polish model:', e);
+      errorMessage = String(e);
+      lastFailedDownload = 'llm';
+      currentState = 'error';
+      return;
     }
     setPolishMode('local');
     setPolishEnabled(true);

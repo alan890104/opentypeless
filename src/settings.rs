@@ -38,7 +38,7 @@ pub struct Settings {
 }
 
 fn default_idle_mic_timeout_secs() -> u32 {
-    300
+    0
 }
 
 impl Default for Settings {
@@ -124,7 +124,10 @@ pub fn load_settings() -> Settings {
                     Settings::default()
                 }
             },
-            Err(_) => Settings::default(),
+            Err(e) => {
+                tracing::warn!("Failed to read settings file ({}), using defaults", e);
+                Settings::default()
+            }
         }
     } else {
         Settings::default()
@@ -268,7 +271,14 @@ pub fn save_settings_to_disk(settings: &Settings) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(&path, json);
+    match serde_json::to_string_pretty(settings) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::error!("Failed to write settings to disk ({}): {}", path.display(), e);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to serialize settings: {}", e);
+        }
     }
 }
