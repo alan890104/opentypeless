@@ -126,6 +126,7 @@
 
   // ── STT Choice ──
 
+  let sttModelsLoading = $state(true);
   let sttMode = $state<string>('local');
   let sttModels = $state<WhisperModelInfo[]>([]);
   let selectedSttModel = $state<WhisperModelId>('large_v3_turbo');
@@ -195,6 +196,8 @@
       recommendedKey = engineRec === 'whisper' ? `whisper:${rec}` : `qwen3_asr:${q3rec}`;
     } catch {
       // Fallback to defaults
+    } finally {
+      sttModelsLoading = false;
     }
   }
 
@@ -709,7 +712,7 @@
 
 {#if getShowSetup()}
   <div class="setup-overlay" class:fade-out={fadeOut}>
-    <div class="setup-backdrop"></div>
+    <div class="setup-backdrop" data-tauri-drag-region></div>
     <div class="setup-card">
 
       <!-- ═══ Permissions ═══ -->
@@ -831,8 +834,12 @@
                   class:selected={selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
                   onclick={() => { selectedLocalEngine = 'whisper'; selectedSttModel = model.id; }}
                 >
-                  <div class="setup-model-radio">
-                    {#if selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
+                  <div class="setup-model-radio" class:downloaded={model.downloaded}>
+                    {#if model.downloaded}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.5L4 8L8.5 2.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else if selectedLocalEngine === 'whisper' && selectedSttModel === model.id}
                       <div class="setup-model-radio-dot"></div>
                     {/if}
                   </div>
@@ -855,8 +862,12 @@
                   class:selected={selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
                   onclick={() => { selectedLocalEngine = 'qwen3_asr'; selectedQwen3Model = model.id; }}
                 >
-                  <div class="setup-model-radio">
-                    {#if selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
+                  <div class="setup-model-radio" class:downloaded={model.downloaded}>
+                    {#if model.downloaded}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.5L4 8L8.5 2.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else if selectedLocalEngine === 'qwen3_asr' && selectedQwen3Model === model.id}
                       <div class="setup-model-radio-dot"></div>
                     {/if}
                   </div>
@@ -875,7 +886,7 @@
               {/each}
             </div>
 
-            <button class="setup-download-btn" onclick={onSttLocalDownload}>
+            <button class="setup-download-btn" disabled={sttModelsLoading} onclick={onSttLocalDownload}>
               {isCurrentModelDownloaded ? t('setup.permContinue') : t('setup.sttModelDownloadBtn')}
             </button>
           {:else}
@@ -1529,6 +1540,11 @@
     height: 10px;
     border-radius: 50%;
     background: var(--accent-blue);
+  }
+
+  .setup-model-radio.downloaded {
+    border-color: #34C759;
+    background: #34C759;
   }
 
   .setup-model-info {
