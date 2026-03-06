@@ -1232,48 +1232,63 @@ pub fn run() {
                             continue;
                         }
 
+                        let timeout = std::time::Duration::from_secs(timeout_secs as u64);
+
+                        // Pre-check elapsed outside the lock as a fast path to
+                        // avoid contending on audio_thread every 5 seconds.
                         let elapsed = state
                             .last_recording_end
                             .lock()
                             .ok()
-                            .and_then(|t| t.map(|i| i.elapsed()))
-                            .unwrap_or_default();
+                            .and_then(|t| t.map(|i| i.elapsed()));
 
-                        if elapsed.is_zero() {
-                            // Never recorded yet — don't count down.
-                            continue;
+                        match elapsed {
+                            None | Some(std::time::Duration::ZERO) => continue, // never recorded
+                            Some(e) if e < timeout => continue,
+                            _ => {}
                         }
 
-                        if elapsed >= std::time::Duration::from_secs(timeout_secs as u64) {
-                            // Acquire audio_thread lock and re-check is_recording
-                            // atomically — do_start_recording Step 3 also holds
-                            // this lock when setting is_recording=true, so the two
-                            // operations are mutually exclusive (no TOCTOU window).
-                            if let Ok(mut at) = state.audio_thread.lock() {
-                                if state.is_recording.load(Ordering::SeqCst)
-                                    || state.meeting_active.load(Ordering::SeqCst)
-                                    || state.reconnecting.load(Ordering::SeqCst)
-                                {
-                                    continue;
-                                }
-                                tracing::info!(
-                                    "Idle mic timeout ({}s) — closing mic stream",
-                                    timeout_secs
-                                );
-                                // Set mic_available=false BEFORE stopping the
-                                // stream so a concurrent do_start_recording
-                                // sees the unavailable flag immediately.
-                                state.mic_available.store(false, Ordering::SeqCst);
-                                if let Some(ctrl) = at.take() {
-                                    ctrl.stop();
-                                }
-                                // Reset idle clock so a hot-plug reconnect
-                                // doesn't immediately re-trigger a close.
-                                if let Ok(mut t) = state.last_recording_end.lock() {
-                                    *t = None;
-                                }
+                        // Acquire audio_thread lock and re-check all guards
+                        // atomically — do_start_recording Step 3 also holds
+                        // this lock when setting is_recording=true, so the two
+                        // operations are mutually exclusive (no TOCTOU window).
+                        if let Ok(mut at) = state.audio_thread.lock() {
+                            if state.is_recording.load(Ordering::SeqCst)
+                                || state.meeting_active.load(Ordering::SeqCst)
+                                || state.reconnecting.load(Ordering::SeqCst)
+                            {
+                                continue;
                             }
-                        }
+                            // Re-read elapsed inside the lock to close the
+                            // TOCTOU window: a recording may have completed
+                            // between our pre-check and acquiring this lock.
+                            let fresh = state
+                                .last_recording_end
+                                .lock()
+                                .ok()
+                                .and_then(|t| t.map(|i| i.elapsed()));
+                            match fresh {
+                                None | Some(std::time::Duration::ZERO) => continue,
+                                Some(e) if e < timeout => continue,
+                                _ => {}
+                            }
+                            tracing::info!(
+                                "Idle mic timeout ({}s) — closing mic stream",
+                                timeout_secs
+                            );
+                            // Set mic_available=false BEFORE stopping the
+                            // stream so a concurrent do_start_recording
+                            // sees the unavailable flag immediately.
+                            state.mic_available.store(false, Ordering::SeqCst);
+                            if let Some(ctrl) = at.take() {
+                                ctrl.stop();
+                            }
+                            // Reset idle clock so a hot-plug reconnect
+                            // doesn't immediately re-trigger a close.
+                            if let Ok(mut t) = state.last_recording_end.lock() {
+                                *t = None;
+                            }
+                        };
                     }
                 });
             }
