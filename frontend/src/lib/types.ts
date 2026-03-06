@@ -231,6 +231,7 @@ export interface DownloadProgress {
   downloaded?: number;
   total?: number;
   message?: string;
+  current_file?: string;
 }
 
 // ── Meeting Notes ──

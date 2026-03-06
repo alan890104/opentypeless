@@ -127,6 +127,7 @@
   // ── STT Choice ──
 
   let sttModelsLoading = $state(true);
+  let sttLocalActivating = $state(false);
   let sttMode = $state<string>('local');
   let sttModels = $state<WhisperModelInfo[]>([]);
   let selectedSttModel = $state<WhisperModelId>('large_v3_turbo');
@@ -295,50 +296,54 @@
 
   async function onSttLocalDownload() {
     setSttMode('local');
-
-    if (selectedLocalEngine === 'whisper') {
-      setSttLocalEngine('whisper');
-      setSttWhisperModel(selectedSttModel);
-      try {
-        await switchWhisperModel(selectedSttModel);
-      } catch (e) {
-        console.error('Failed to switch whisper model:', e);
-      }
-
-      if (selectedSttModelDownloaded) {
+    sttLocalActivating = true;
+    try {
+      if (selectedLocalEngine === 'whisper') {
+        setSttLocalEngine('whisper');
+        setSttWhisperModel(selectedSttModel);
         try {
-          const vadStatus = await checkVadModelStatus();
-          if (vadStatus.downloaded) {
-            try { await saveSettingsApi(buildPayload()); } catch {}
-            goToPolishChoice();
-            return;
-          }
-        } catch {}
-      }
-    } else {
-      // Qwen3-ASR
-      setSttLocalEngine('qwen3_asr');
-      setSttQwen3AsrModel(selectedQwen3Model);
-      try {
-        await switchQwen3AsrModel(selectedQwen3Model);
-      } catch (e) {
-        console.error('Failed to switch Qwen3-ASR model:', e);
-      }
+          await switchWhisperModel(selectedSttModel);
+        } catch (e) {
+          console.error('Failed to switch whisper model:', e);
+        }
 
-      if (selectedQwen3ModelDownloaded) {
+        if (selectedSttModelDownloaded) {
+          try {
+            const vadStatus = await checkVadModelStatus();
+            if (vadStatus.downloaded) {
+              try { await saveSettingsApi(buildPayload()); } catch {}
+              goToPolishChoice();
+              return;
+            }
+          } catch {}
+        }
+      } else {
+        // Qwen3-ASR
+        setSttLocalEngine('qwen3_asr');
+        setSttQwen3AsrModel(selectedQwen3Model);
         try {
-          const vadStatus = await checkVadModelStatus();
-          if (vadStatus.downloaded) {
-            try { await saveSettingsApi(buildPayload()); } catch {}
-            goToPolishChoice();
-            return;
-          }
-        } catch {}
+          await switchQwen3AsrModel(selectedQwen3Model);
+        } catch (e) {
+          console.error('Failed to switch Qwen3-ASR model:', e);
+        }
+
+        if (selectedQwen3ModelDownloaded) {
+          try {
+            const vadStatus = await checkVadModelStatus();
+            if (vadStatus.downloaded) {
+              try { await saveSettingsApi(buildPayload()); } catch {}
+              goToPolishChoice();
+              return;
+            }
+          } catch {}
+        }
       }
+      // Persist local_engine (and model) before starting download
+      try { await saveSettingsApi(buildPayload()); } catch {}
+      startSttDownload();
+    } finally {
+      sttLocalActivating = false;
     }
-    // Persist local_engine (and model) before starting download
-    try { await saveSettingsApi(buildPayload()); } catch {}
-    startSttDownload();
   }
 
   // ── STT Download ──
@@ -371,12 +376,14 @@
         await switchQwen3AsrModel(selectedQwen3Model);
       }
     } catch (e) {
+      if (currentState !== 'activating') return; // user clicked Skip
       console.error('Failed to activate STT model:', e);
       errorMessage = String(e);
       lastFailedStep = 'sttActivate';
       currentState = 'error';
       return;
     }
+    if (currentState !== 'activating') return; // user clicked Skip
     goToPolishChoice();
   }
 
@@ -637,12 +644,14 @@
     try {
       await switchPolishModel(selectedPolishModel);
     } catch (e) {
+      if (currentState !== 'llmActivating') return; // user clicked Skip
       console.error('Failed to activate polish model:', e);
       errorMessage = String(e);
       lastFailedStep = 'llmActivate';
       currentState = 'error';
       return;
     }
+    if (currentState !== 'llmActivating') return; // user clicked Skip
     setPolishMode('local');
     setPolishEnabled(true);
     finishSetup();
@@ -651,13 +660,12 @@
   // ── Error state ──
 
   let errorMessage = $state('');
-  let lastFailedStep = $state<'sttDownload' | 'sttActivate' | 'llmDownload' | 'llmActivate'>('sttDownload');
+  let lastFailedStep = $state<'sttDownload' | 'sttActivate' | 'llmActivate'>('sttDownload');
 
   function onRetryDownload() {
     switch (lastFailedStep) {
       case 'sttDownload': startSttDownload(); break;
       case 'sttActivate': activateSttModel(); break;
-      case 'llmDownload': startLlmDownload(); break;
       case 'llmActivate': activatePolishModel(); break;
     }
   }
