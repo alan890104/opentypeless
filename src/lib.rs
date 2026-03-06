@@ -1242,6 +1242,7 @@ pub fn run() {
                             // minimise the TOCTOU window with do_start_recording.
                             if state.is_recording.load(Ordering::SeqCst)
                                 || state.meeting_active.load(Ordering::SeqCst)
+                                || state.reconnecting.load(Ordering::SeqCst)
                             {
                                 continue;
                             }

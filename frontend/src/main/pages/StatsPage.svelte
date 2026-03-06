@@ -171,7 +171,9 @@
     if (!stats) return '$0.00';
     // STT: Groq Whisper API rate $0.006/min
     const sttDollars = stats.local_duration_secs / 60 * 0.006;
-    // LLM: GPT-4o rate $2.50/1M input tokens + $10/1M output tokens; ~4 chars/token, +200 tokens system prompt per call
+    // LLM cost approximation: GPT-4o rates ($2.50/1M input + $10/1M output) used as
+    // a conservative reference regardless of the actual provider/model configured.
+    // ~4 chars/token; +200 tokens per call for system prompt overhead.
     const inputTokens = stats.local_polish_input_chars / 4 + stats.local_polish_entries * 200;
     const outputTokens = stats.local_polish_output_chars / 4;
     const llmDollars = inputTokens * 2.5 / 1_000_000 + outputTokens * 10 / 1_000_000;

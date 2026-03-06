@@ -605,7 +605,7 @@
         llmDownloadTotalBytes = total;
       } else if (p.status === 'complete') {
         llmDownloadPercent = 100;
-        activatePolishModel();
+        setTimeout(() => activatePolishModel(), 1500);
       } else if (p.status === 'error') {
         console.error('LLM setup download error:', p.message);
         // On error, advance -- user can download from settings later
