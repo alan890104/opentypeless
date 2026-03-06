@@ -461,6 +461,7 @@
 
   // ── Polish Choice ──
 
+  let polishModelsLoading = $state(true);
   let polishMode = $state<string>('local');
   let polishModels = $state<PolishModelInfo[]>([]);
   let selectedPolishModel = $state<PolishModel>('phi4_mini');
@@ -481,6 +482,7 @@
   ];
 
   async function fetchPolishModels() {
+    polishModelsLoading = true;
     try {
       polishModels = await listPolishModels();
       // Pre-select first available model
@@ -489,6 +491,8 @@
       }
     } catch {
       polishModels = [];
+    } finally {
+      polishModelsLoading = false;
     }
   }
 
@@ -1058,8 +1062,17 @@
               {/each}
             </div>
 
-            <button class="setup-download-btn" onclick={onPolishLocalDownload}>
-              {selectedModelDownloaded ? t('setup.permContinue') : t('setup.llmDownloadBtn')}
+            <button class="setup-download-btn" disabled={polishModelsLoading} onclick={onPolishLocalDownload}>
+              {#if polishModelsLoading}
+                <span class="setup-btn-spinner">
+                  <svg class="setup-spinner" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="7" r="5" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>
+                    <path d="M7 2a5 5 0 0 1 5 5" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </span>
+              {:else}
+                {selectedModelDownloaded ? t('setup.permContinue') : t('setup.llmDownloadBtn')}
+              {/if}
             </button>
           {:else}
             <div class="setup-panel-desc">{t('setup.polishCloudDesc')}</div>
@@ -1383,6 +1396,21 @@
   .setup-download-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .setup-btn-spinner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .setup-spinner {
+    animation: spin 0.8s linear infinite;
   }
 
   .setup-retry-btn {
