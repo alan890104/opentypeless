@@ -395,6 +395,7 @@
   "meeting.polishError": "Failed to generate summary",
   "meeting.import": "Import Audio File",
   "meeting.importing": "Importing…",
+  "meeting.processingAudio": "Processing audio…",
   "meeting.importOrImport": "or import an audio file",
   "meeting.importDrop": "Drop audio file to import",
   "meeting.importSelectFile": "Select audio file",

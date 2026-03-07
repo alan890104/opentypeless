@@ -66,6 +66,32 @@
     return marked.parse(md, { async: false }) as string;
   }
 
+  // Mirror of Rust's `transcript_from_wal`: converts JSONL WAL to human-readable text.
+  // Groups consecutive same-speaker segments. Falls back gracefully for legacy plain text.
+  function walToText(raw: string): string {
+    if (!raw) return '';
+    let out = '';
+    let prevSpeaker = '';
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const seg = JSON.parse(trimmed) as { speaker: string; text: string };
+        if (!seg.text) continue;
+        if (seg.speaker !== prevSpeaker) {
+          if (out) out += '\n';
+          if (seg.speaker) out += seg.speaker + ': ';
+          prevSpeaker = seg.speaker;
+        }
+        out += seg.text + '\n';
+      } catch {
+        // Legacy plain-text line
+        out += trimmed + '\n';
+      }
+    }
+    return out || raw;
+  }
+
   // Auto-set active tab when note changes
   $effect(() => {
     if (selectedNote) {
@@ -95,7 +121,7 @@
 
   function preview(text: string, maxLen = 80): string {
     if (!text) return '';
-    const oneLine = text.replace(/\n/g, ' ');
+    const oneLine = walToText(text).replace(/\n/g, ' ');
     return oneLine.length > maxLen ? oneLine.slice(0, maxLen) + '…' : oneLine;
   }
 
@@ -206,7 +232,7 @@
     if (activeTab === 'summary' && selectedNote.summary) {
       await copyText(stripMarkdown(selectedNote.summary));
     } else {
-      await copyText(selectedNote.transcript);
+      await copyText(walToText(selectedNote.transcript));
     }
   }
 
@@ -337,6 +363,9 @@
       notes = [p.note, ...notes];
       selectedId = p.id;
       userScrolledUp = false;
+      // Link the new note to the active import so the processing indicator
+      // appears immediately (before the first import-progress event with id).
+      if (importing) importingNoteId = p.id;
     });
 
     const u2 = await onMeetingNoteUpdated((p) => {
@@ -432,7 +461,11 @@
         disabled={importing}
         title={t('meeting.import')}
       >
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        {#if importing && !importingNoteId}
+          <span class="spinner-small" style="width:16px;height:16px;border-width:2px;"></span>
+        {:else}
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        {/if}
       </button>
     </div>
 
@@ -572,7 +605,12 @@
             <p class="no-content">{t('meeting.noSummaryYet')}</p>
           {/if}
         {:else if selectedNote.transcript}
-          <pre class="transcript-text">{selectedNote.transcript}</pre>
+          <pre class="transcript-text">{walToText(selectedNote.transcript)}</pre>
+        {:else if importing && importingNoteId === selectedNote.id}
+          <div class="processing-state">
+            <span class="spinner-small"></span>
+            <p class="no-content">{t('meeting.processingAudio')}</p>
+          </div>
         {:else if selectedNote.is_recording}
           <p class="no-content">{t('meeting.noSpeechDetected')}</p>
         {:else}
@@ -906,6 +944,14 @@
     color: var(--text-tertiary);
     font-style: italic;
     margin: 0;
+  }
+
+  .processing-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding-top: 40px;
   }
 
   .content-footer {

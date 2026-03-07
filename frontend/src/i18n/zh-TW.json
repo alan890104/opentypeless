@@ -395,6 +395,7 @@
   "meeting.polishError": "摘要生成失敗",
   "meeting.import": "匯入音訊檔",
   "meeting.importing": "匯入中…",
+  "meeting.processingAudio": "處理音訊中…",
   "meeting.importOrImport": "或匯入音訊檔",
   "meeting.importDrop": "拖放音訊檔以匯入",
   "meeting.importSelectFile": "選擇音訊檔",
