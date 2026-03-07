@@ -65,7 +65,8 @@ pub struct SegmentationModel {
     session: ort::session::Session,
 }
 
-// ORT Session is Send.
+// SAFETY: ort::session::Session is Send+Sync in ort 2.x (sessions are protected
+// by an internal mutex and contain no thread-local state).
 unsafe impl Send for SegmentationModel {}
 
 impl SegmentationModel {
@@ -381,7 +382,10 @@ pub struct DiarizationEngine {
     segment_buffer: Vec<(f64, f64, Vec<f32>)>,
 }
 
-// Both ORT sessions (EmbeddingExtractor + SegmentationModel) are Send.
+// SAFETY: ort::session::Session is Send+Sync in ort 2.x. EmbeddingExtractor wraps
+// an ORT session and contains no thread-local state. DiarizationEngine is only
+// ever accessed through a Mutex<Option<DiarizationEngine>>, which provides the
+// required serialisation.
 unsafe impl Send for DiarizationEngine {}
 
 impl DiarizationEngine {
@@ -1033,10 +1037,10 @@ mod integration {
 
     // ── WeSpeaker embedding ────────────────────────────────────────────────────
 
-    /// Verify WeSpeaker produces non-zero 256-dim embeddings from real speech.
+    /// Verify WeSpeaker produces non-zero 512-dim embeddings from real speech.
     #[test]
     #[ignore = "requires wespeaker-voxceleb-resnet34-LM.onnx in ~/.sumi-dev/models/"]
-    fn wespeaker_produces_256_dim_embedding() {
+    fn wespeaker_produces_512_dim_embedding() {
         let emb_path = crate::settings::diarization_model_path();
         assert!(emb_path.exists(), "WeSpeaker model not found: {}", emb_path.display());
         assert!(std::path::Path::new(&test1_wav()).exists());
@@ -1231,8 +1235,8 @@ mod integration {
         let mut extractor =
             pyannote_rs::EmbeddingExtractor::new(path_str).expect("EmbeddingExtractor");
 
-        // Find all sub-segments (same as full_pipeline).
-        let sub_segs = seg_model.find_sub_segments(&samples_16k.iter().map(|&x| x * 32767.0).collect::<Vec<f32>>());
+        // find_sub_segments scales internally (×32767); pass raw f32 directly.
+        let sub_segs = seg_model.find_sub_segments(&samples_16k);
         println!("\n[segmentation] {} sub-segments:", sub_segs.len());
 
         let mut embeddings: Vec<(f64, f64, usize, Vec<f32>)> = Vec::new();

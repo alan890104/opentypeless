@@ -2558,7 +2558,7 @@ pub fn check_diarization_model_status() -> serde_json::Value {
 }
 
 #[tauri::command]
-pub fn download_diarization_model(app: AppHandle) -> Result<(), String> {
+pub fn download_diarization_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use std::io::Read as _;
 
     let url = crate::diarization::WESPEAKER_URL;
@@ -2571,6 +2571,10 @@ pub fn download_diarization_model(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    if state.downloading.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("A model download is already in progress".to_string());
+    }
+
     if let Some(dir) = model_path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -2579,86 +2583,48 @@ pub fn download_diarization_model(app: AppHandle) -> Result<(), String> {
     let _ = std::fs::remove_file(&tmp_path);
 
     std::thread::spawn(move || {
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = app.emit(
-                    "diarization-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let resp = match client.get(url).send() {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = app.emit(
-                    "diarization-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let total = resp.content_length().unwrap_or(0);
-        let mut file = match std::fs::File::create(&tmp_path) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = app.emit(
-                    "diarization-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let mut downloaded: u64 = 0;
-        let mut buf = [0u8; 65536];
-        let mut reader = resp;
-
-        loop {
-            let n = match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) => {
-                    let _ = app.emit(
-                        "diarization-model-download-progress",
-                        serde_json::json!({ "status": "error", "message": e.to_string() }),
-                    );
-                    return;
-                }
-            };
-            if let Err(e) = std::io::Write::write_all(&mut file, &buf[..n]) {
-                let _ = app.emit(
-                    "diarization-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-            downloaded += n as u64;
+        let emit_err = |msg: String| {
             let _ = app.emit(
                 "diarization-model-download-progress",
-                serde_json::json!({ "downloaded": downloaded, "total": total }),
+                serde_json::json!({ "status": "error", "message": msg }),
             );
-        }
+        };
+        (|| -> Result<(), String> {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .map_err(|e| e.to_string())?;
 
-        drop(file);
-        if let Err(e) = std::fs::rename(&tmp_path, &model_path) {
+            let resp = client.get(url).send().map_err(|e| e.to_string())?;
+            let total = resp.content_length().unwrap_or(0);
+            let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+
+            let mut downloaded: u64 = 0;
+            let mut buf = [0u8; 65536];
+            let mut reader = resp;
+            loop {
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => return Err(e.to_string()),
+                };
+                std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| e.to_string())?;
+                downloaded += n as u64;
+                let _ = app.emit(
+                    "diarization-model-download-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            }
+            drop(file);
+            std::fs::rename(&tmp_path, &model_path).map_err(|e| e.to_string())?;
             let _ = app.emit(
                 "diarization-model-download-progress",
-                serde_json::json!({ "status": "error", "message": e.to_string() }),
+                serde_json::json!({ "status": "complete" }),
             );
-            return;
-        }
-
-        let _ = app.emit(
-            "diarization-model-download-progress",
-            serde_json::json!({ "status": "complete" }),
-        );
+            Ok(())
+        })()
+        .unwrap_or_else(|e| emit_err(e));
+        app.state::<AppState>().downloading.store(false, Ordering::SeqCst);
     });
 
     Ok(())
@@ -2703,7 +2669,7 @@ pub fn check_segmentation_model_status() -> serde_json::Value {
 }
 
 #[tauri::command]
-pub fn download_segmentation_model(app: AppHandle) -> Result<(), String> {
+pub fn download_segmentation_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use std::io::Read as _;
 
     let url = crate::diarization::SEGMENTATION_URL;
@@ -2716,6 +2682,10 @@ pub fn download_segmentation_model(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    if state.downloading.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("A model download is already in progress".to_string());
+    }
+
     if let Some(dir) = model_path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -2724,86 +2694,48 @@ pub fn download_segmentation_model(app: AppHandle) -> Result<(), String> {
     let _ = std::fs::remove_file(&tmp_path);
 
     std::thread::spawn(move || {
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = app.emit(
-                    "segmentation-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let resp = match client.get(url).send() {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = app.emit(
-                    "segmentation-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let total = resp.content_length().unwrap_or(0);
-        let mut file = match std::fs::File::create(&tmp_path) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = app.emit(
-                    "segmentation-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        let mut downloaded: u64 = 0;
-        let mut buf = [0u8; 65536];
-        let mut reader = resp;
-
-        loop {
-            let n = match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) => {
-                    let _ = app.emit(
-                        "segmentation-model-download-progress",
-                        serde_json::json!({ "status": "error", "message": e.to_string() }),
-                    );
-                    return;
-                }
-            };
-            if let Err(e) = std::io::Write::write_all(&mut file, &buf[..n]) {
-                let _ = app.emit(
-                    "segmentation-model-download-progress",
-                    serde_json::json!({ "status": "error", "message": e.to_string() }),
-                );
-                return;
-            }
-            downloaded += n as u64;
+        let emit_err = |msg: String| {
             let _ = app.emit(
                 "segmentation-model-download-progress",
-                serde_json::json!({ "downloaded": downloaded, "total": total }),
+                serde_json::json!({ "status": "error", "message": msg }),
             );
-        }
+        };
+        (|| -> Result<(), String> {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .map_err(|e| e.to_string())?;
 
-        drop(file);
-        if let Err(e) = std::fs::rename(&tmp_path, &model_path) {
+            let resp = client.get(url).send().map_err(|e| e.to_string())?;
+            let total = resp.content_length().unwrap_or(0);
+            let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+
+            let mut downloaded: u64 = 0;
+            let mut buf = [0u8; 65536];
+            let mut reader = resp;
+            loop {
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => return Err(e.to_string()),
+                };
+                std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| e.to_string())?;
+                downloaded += n as u64;
+                let _ = app.emit(
+                    "segmentation-model-download-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            }
+            drop(file);
+            std::fs::rename(&tmp_path, &model_path).map_err(|e| e.to_string())?;
             let _ = app.emit(
                 "segmentation-model-download-progress",
-                serde_json::json!({ "status": "error", "message": e.to_string() }),
+                serde_json::json!({ "status": "complete" }),
             );
-            return;
-        }
-
-        let _ = app.emit(
-            "segmentation-model-download-progress",
-            serde_json::json!({ "status": "complete" }),
-        );
+            Ok(())
+        })()
+        .unwrap_or_else(|e| emit_err(e));
+        app.state::<AppState>().downloading.store(false, Ordering::SeqCst);
     });
 
     Ok(())

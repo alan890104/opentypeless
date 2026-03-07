@@ -1867,14 +1867,11 @@ fn start_meeting_mode(app: &AppHandle) {
             if model_path.exists() {
                 let seg_path = settings::segmentation_model_path();
                 let seg_opt = if seg_path.exists() { Some(seg_path.as_path()) } else { None };
-                match diar.as_mut() {
-                    Some(engine) => engine.reset(),
-                    None => {
-                        match diarization::DiarizationEngine::new(&model_path, seg_opt) {
-                            Ok(engine) => *diar = Some(engine),
-                            Err(e) => tracing::warn!("[diarization] failed to load model: {e}"),
-                        }
-                    }
+                // Always recreate so that a newly-downloaded segmentation model
+                // is picked up even when an engine already exists from a prior session.
+                match diarization::DiarizationEngine::new(&model_path, seg_opt) {
+                    Ok(engine) => *diar = Some(engine),
+                    Err(e) => tracing::warn!("[diarization] failed to load model: {e}"),
                 }
             } else {
                 tracing::warn!("[diarization] model not found at {} — diarization disabled", model_path.display());

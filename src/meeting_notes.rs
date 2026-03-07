@@ -319,7 +319,7 @@ pub fn update_wal_speakers(wal: &str, labels: &[(f64, f64, String)]) -> String {
             serde_json::to_string(&seg).unwrap_or_else(|_| line.to_string())
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n") + "\n"
 }
 
 pub fn finalize_note(

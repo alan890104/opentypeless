@@ -378,12 +378,15 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, s
             .map(|(i, _)| i)
             .unwrap_or(0);
 
+        // Qwen3-ASR has no word timestamps, so we can't split the transcribed text
+        // across sub-segments.  Assign all text to the longest sub-segment and emit
+        // the others with empty text so their speaker labels are preserved in the WAL.
         sub_segs
             .into_iter()
             .enumerate()
-            .filter_map(|(i, (s, e, speaker))| {
+            .map(|(i, (s, e, speaker))| {
                 let t = if i == primary_idx { text.clone() } else { String::new() };
-                if t.is_empty() { None } else { Some(WalSegment { speaker, start: s, end: e, text: t, words: vec![] }) }
+                WalSegment { speaker, start: s, end: e, text: t, words: vec![] }
             })
             .collect()
     });
