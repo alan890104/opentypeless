@@ -1,5 +1,6 @@
 mod audio;
 mod audio_devices;
+mod audio_import;
 mod commands;
 mod segment_spacing;
 mod context_detect;
@@ -136,6 +137,10 @@ pub struct AppState {
     /// Timestamp of the last recording end. Used by the idle mic watcher to
     /// determine when to close the mic stream.
     pub last_recording_end: Mutex<Option<Instant>>,
+    /// True while an audio file import is running.
+    pub import_active: AtomicBool,
+    /// Set to true to cancel a running audio file import.
+    pub import_cancelled: AtomicBool,
 }
 
 /// Emit a `"transcription-partial"` event to the overlay window.
@@ -795,6 +800,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::start_recording,
             commands::stop_recording,
@@ -859,6 +865,8 @@ pub fn run() {
             commands::delete_all_meeting_notes,
             commands::get_active_meeting_note_id,
             commands::polish_meeting_note,
+            commands::import_meeting_audio,
+            commands::cancel_import,
         ])
         .setup(|app| {
             // Initialize logger
@@ -1001,6 +1009,8 @@ pub fn run() {
                 ),
                 media_paused_by_sumi: AtomicBool::new(false),
                 last_recording_end: Mutex::new(None),
+                import_active: AtomicBool::new(false),
+                import_cancelled: AtomicBool::new(false),
             });
 
             // Register a CoreAudio listener for default-input-device changes.

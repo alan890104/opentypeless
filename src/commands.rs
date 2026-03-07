@@ -2738,6 +2738,27 @@ fn parse_polish_json(raw: &str, fallback_title: &str) -> PolishedMeetingNote {
     }
 }
 
+// ── Audio Import ──
+
+#[tauri::command]
+pub async fn import_meeting_audio(
+    app: AppHandle,
+    file_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::audio_import::run_import(&app, &file_path)
+    })
+    .await
+    .map_err(|e| format!("Import thread panicked: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_import(state: State<'_, AppState>) {
+    state
+        .import_cancelled
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

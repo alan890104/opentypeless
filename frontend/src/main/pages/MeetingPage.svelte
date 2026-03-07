@@ -14,7 +14,12 @@
     onMeetingNoteCreated,
     onMeetingNoteUpdated,
     onMeetingNoteFinalized,
+    importMeetingAudio,
+    cancelImport,
+    onImportProgress,
   } from '$lib/api';
+  import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import type { MeetingNote } from '$lib/types';
   import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -46,6 +51,12 @@
   let contextMenuId = $state<string | null>(null);
   let contextMenuX = $state(0);
   let contextMenuY = $state(0);
+
+  // Import state
+  let importing = $state(false);
+  let importingNoteId = $state<string | null>(null);
+  let importProgress = $state(0);
+  let dragOver = $state(false);
 
   let unlisteners: UnlistenFn[] = [];
 
@@ -260,6 +271,51 @@
     copyMenuOpen = false;
   }
 
+  // ── Import ──
+  const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'];
+
+  async function handleImportClick() {
+    if (importing) return;
+    const path = await openFileDialog({
+      title: t('meeting.importSelectFile'),
+      filters: [{
+        name: 'Audio',
+        extensions: AUDIO_EXTENSIONS,
+      }],
+      multiple: false,
+    });
+    if (path) {
+      startImport(path as string);
+    }
+  }
+
+  async function startImport(filePath: string) {
+    if (importing) return;
+    importing = true;
+    importProgress = 0;
+    try {
+      await importMeetingAudio(filePath);
+    } catch (e: any) {
+      const msg = typeof e === 'string' ? e : e?.message ?? 'Import failed';
+      if (msg !== 'cancelled') {
+        console.error('Import failed:', msg);
+        alert(msg);
+      }
+    }
+    importing = false;
+    importingNoteId = null;
+    importProgress = 0;
+  }
+
+  async function handleCancelImport() {
+    await cancelImport();
+  }
+
+  function isAudioFile(name: string): boolean {
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    return AUDIO_EXTENSIONS.includes(ext);
+  }
+
   // ── Lifecycle ──
   onMount(async () => {
     loading = true;
@@ -316,7 +372,31 @@
       }
     });
 
-    unlisteners = [u1, u2, u3];
+    const u4 = await onImportProgress((p) => {
+      if (p.id) importingNoteId = p.id;
+      importProgress = p.progress;
+    });
+
+    // Drag-and-drop: listen for file drops on this window
+    const webview = getCurrentWebviewWindow();
+    const u5 = await webview.onDragDropEvent((event) => {
+      if (event.payload.type === 'over') {
+        dragOver = true;
+      } else if (event.payload.type === 'drop') {
+        dragOver = false;
+        const paths = event.payload.paths;
+        if (paths.length > 0) {
+          const file = paths[0];
+          if (isAudioFile(file)) {
+            startImport(file);
+          }
+        }
+      } else {
+        dragOver = false;
+      }
+    });
+
+    unlisteners = [u1, u2, u3, u4, u5];
 
     // Close context menu on outside click
     document.addEventListener('click', closeContextMenu);
@@ -332,10 +412,28 @@
 </script>
 
 <div class="meeting-page">
+  <!-- Drag-and-drop overlay -->
+  {#if dragOver}
+    <div class="drop-overlay">
+      <div class="drop-overlay-content">
+        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <p>{t('meeting.importDrop')}</p>
+      </div>
+    </div>
+  {/if}
+
   <!-- Left panel: note list -->
   <div class="note-list-panel">
     <div class="list-header">
       <h2>{t('nav.meeting')}</h2>
+      <button
+        class="import-btn"
+        onclick={handleImportClick}
+        disabled={importing}
+        title={t('meeting.import')}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </button>
     </div>
 
     <div class="note-list">
@@ -347,6 +445,9 @@
         <div class="list-empty">
           <p class="empty-title">{t('meeting.emptyTitle')}</p>
           <p class="empty-hint">{t('meeting.emptyHint')}</p>
+          <button class="empty-import-btn" onclick={handleImportClick} disabled={importing}>
+            {t('meeting.importOrImport')}
+          </button>
         </div>
       {:else}
         {#each notes as note (note.id)}
@@ -365,15 +466,21 @@
               oncontextmenu={(e) => handleContextMenu(e, note.id)}
             >
               <div class="note-item-top">
-                {#if note.is_recording}
+                {#if importing && importingNoteId === note.id}
+                  <span class="importing-dot"></span>
+                {:else if note.is_recording}
                   <span class="recording-dot"></span>
                 {/if}
                 <span class="note-title">{defaultTitle(note)}</span>
               </div>
               <div class="note-item-meta">
-                <span>{formatDate(note.created_at)}</span>
-                <span class="meta-sep">·</span>
-                <span>{formatDuration(note.duration_secs)}</span>
+                {#if importing && importingNoteId === note.id}
+                  <span>{t('meeting.importing')} {Math.round(importProgress * 100)}%</span>
+                {:else}
+                  <span>{formatDate(note.created_at)}</span>
+                  <span class="meta-sep">·</span>
+                  <span>{formatDuration(note.duration_secs)}</span>
+                {/if}
               </div>
               <div class="note-item-preview">{preview(note.transcript)}</div>
             </button>
@@ -426,6 +533,12 @@
         {/if}
       </div>
 
+      {#if importing && importingNoteId === selectedNote.id}
+        <div class="import-progress-bar">
+          <div class="import-progress-fill" style="width: {importProgress * 100}%"></div>
+        </div>
+      {/if}
+
       <div class="content-divider"></div>
 
       {#if selectedNote.summary || polishing}
@@ -469,7 +582,12 @@
 
       <div class="content-footer">
         <div class="footer-meta">
-          {#if selectedNote.is_recording}
+          {#if importing && importingNoteId === selectedNote.id}
+            <span class="meta-importing">
+              <span class="importing-dot-small"></span>
+              {t('meeting.importing')} {Math.round(importProgress * 100)}%
+            </span>
+          {:else if selectedNote.is_recording}
             <span class="meta-recording">
               <span class="recording-dot-small"></span>
               {t('meeting.recording')}
@@ -522,6 +640,9 @@
       <div class="content-empty">
         <p class="empty-title">{t('meeting.emptyTitle')}</p>
         <p class="empty-hint">{t('meeting.emptyHint')}</p>
+        <button class="empty-import-btn" onclick={handleImportClick} disabled={importing}>
+          {t('meeting.importOrImport')}
+        </button>
       </div>
     {/if}
   </div>
@@ -546,6 +667,7 @@
     display: flex;
     height: 100%;
     min-height: 0;
+    position: relative;
   }
 
   /* ── Left panel ── */
@@ -1073,5 +1195,118 @@
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  /* ── Import button ── */
+  .import-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s, background 0.15s;
+  }
+  .import-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .import-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .empty-import-btn {
+    margin-top: 12px;
+    background: none;
+    border: 1px solid var(--border-subtle);
+    color: var(--accent-primary, #007aff);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .empty-import-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+  .empty-import-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* ── Importing indicator ── */
+  .importing-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-primary, #007aff);
+    flex-shrink: 0;
+    animation: dotPulse 1.8s ease-in-out infinite;
+  }
+
+  .importing-dot-small {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-primary, #007aff);
+    animation: dotPulse 1.8s ease-in-out infinite;
+  }
+
+  .meta-importing {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--accent-primary, #007aff);
+    font-weight: 600;
+  }
+
+  /* ── Import progress bar ── */
+  .import-progress-bar {
+    height: 3px;
+    background: var(--bg-hover);
+    margin: 0 24px;
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .import-progress-fill {
+    height: 100%;
+    background: var(--accent-primary, #007aff);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  /* ── Drag-and-drop overlay ── */
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 122, 255, 0.08);
+    border: 2px dashed var(--accent-primary, #007aff);
+    border-radius: 12px;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .drop-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent-primary, #007aff);
+  }
+
+  .drop-overlay-content p {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
   }
 </style>

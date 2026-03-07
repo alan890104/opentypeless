@@ -16,6 +16,7 @@
         "updater:default",
         "process:allow-restart",
         "os:default",
-        "core:window:allow-start-dragging"
+        "core:window:allow-start-dragging",
+        "dialog:default"
     ]
 }

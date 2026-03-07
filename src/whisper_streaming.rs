@@ -272,7 +272,7 @@ pub(crate) fn run_whisper_preview_loop(app: AppHandle, language: String, session
 /// Transcribe `samples` (16 kHz) from the already-loaded `WhisperContextCache`.
 /// Uses `initial_prompt` for previous-segment context biasing.
 /// Returns an empty string (never an error) if the context is not loaded.
-fn transcribe_meeting_chunk<'a>(
+pub(crate) fn transcribe_meeting_chunk<'a>(
     ctx_guard: &std::sync::MutexGuard<'_, Option<crate::transcribe::WhisperContextCache>>,
     samples: &[f32],
     language: &'a str,

@@ -307,3 +307,18 @@ export const onMeetingNoteFinalized = (
   cb: (p: { id: string }) => void,
 ): Promise<UnlistenFn> =>
   listen('meeting-note-finalized', (e) => cb(e.payload as { id: string }));
+
+// ── Audio Import ──
+
+export const importMeetingAudio = (filePath: string) =>
+  invoke<string>('import_meeting_audio', { filePath });
+
+export const cancelImport = () =>
+  invoke<void>('cancel_import');
+
+export const onImportProgress = (
+  cb: (p: { id?: string; progress: number; status: string }) => void,
+): Promise<UnlistenFn> =>
+  listen('import-progress', (e) =>
+    cb(e.payload as { id?: string; progress: number; status: string }),
+  );
