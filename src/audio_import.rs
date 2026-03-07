@@ -276,80 +276,77 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     }
 
     // ── Step 5: Build transcribe closure ──
-    let mut transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send> =
-        match stt_config.mode {
-            crate::stt::SttMode::Local => match stt_config.local_engine {
-                crate::stt::LocalSttEngine::Qwen3Asr => {
-                    let model = stt_config.qwen3_asr_model.clone();
-                    let lang = language.clone();
-                    let app_c = app.clone();
-                    Box::new(move |samples, _prev| {
-                        let st = app_c.state::<crate::AppState>();
-                        crate::qwen3_asr::transcribe_with_cached_qwen3_asr(
-                            &st.qwen3_asr_ctx,
-                            samples,
-                            &model,
-                            &lang,
-                        )
-                        .unwrap_or_default()
-                    })
-                }
-                crate::stt::LocalSttEngine::Whisper => {
-                    let lang = language.clone();
-                    let app_c = app.clone();
-                    Box::new(move |samples, prev_text| {
-                        let st = app_c.state::<crate::AppState>();
-                        let ctx_guard = st
-                            .whisper_ctx
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        crate::whisper_streaming::transcribe_meeting_chunk(
-                            &ctx_guard,
-                            samples,
-                            &lang,
-                            if prev_text.is_empty() {
-                                None
-                            } else {
-                                Some(prev_text)
-                            },
-                            0.0, // audio_start_secs: word timestamps not needed for import
-                        )
-                        .map(|(text, _words)| text)
-                        .unwrap_or_default()
-                    })
-                }
-            },
-            crate::stt::SttMode::Cloud => {
-                let mut cloud = stt_config.cloud.clone();
-                cloud.language = language;
-                let key = crate::commands::get_cached_api_key(
-                    &state.api_key_cache,
-                    cloud.provider.as_key(),
-                );
-                if !key.is_empty() {
-                    cloud.api_key = key;
-                }
+    // Returns (text, word_timestamps).  Word timestamps are only populated for
+    // Whisper local — they enable precise text-to-sub-segment assignment when
+    // diarization is active.  Other engines return an empty word vec.
+    // The closure receives the raw (unfiltered) chunk so that DTW timestamps
+    // align with diarization sub-segment boundaries (both use the same audio).
+    let mut transcribe: Box<
+        dyn FnMut(&[f32], f64, &str) -> (String, Vec<meeting_notes::WordTs>) + Send,
+    > = match stt_config.mode {
+        crate::stt::SttMode::Local => match stt_config.local_engine {
+            crate::stt::LocalSttEngine::Qwen3Asr => {
+                let model = stt_config.qwen3_asr_model.clone();
+                let lang = language.clone();
                 let app_c = app.clone();
-                Box::new(move |samples, prev_text| {
+                Box::new(move |samples, _start_secs, _prev| {
                     let st = app_c.state::<crate::AppState>();
-                    let prompt = if prev_text.is_empty() {
-                        None
-                    } else {
-                        Some(prev_text)
-                    };
-                    crate::stt::run_cloud_stt(
-                        &cloud,
+                    let text = crate::qwen3_asr::transcribe_with_cached_qwen3_asr(
+                        &st.qwen3_asr_ctx,
                         samples,
-                        &st.http_client,
-                        prompt,
+                        &model,
+                        &lang,
                     )
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("[import] cloud STT failed: {e}");
-                        String::new()
-                    })
+                    .unwrap_or_default();
+                    (text, vec![])
                 })
             }
-        };
+            crate::stt::LocalSttEngine::Whisper => {
+                let lang = language.clone();
+                let app_c = app.clone();
+                Box::new(move |samples, audio_start_secs, prev_text| {
+                    let st = app_c.state::<crate::AppState>();
+                    let ctx_guard =
+                        st.whisper_ctx.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::whisper_streaming::transcribe_meeting_chunk(
+                        &ctx_guard,
+                        samples,
+                        &lang,
+                        if prev_text.is_empty() { None } else { Some(prev_text) },
+                        audio_start_secs,
+                    )
+                    .unwrap_or_default()
+                })
+            }
+        },
+        crate::stt::SttMode::Cloud => {
+            let mut cloud = stt_config.cloud.clone();
+            cloud.language = language;
+            let key = crate::commands::get_cached_api_key(
+                &state.api_key_cache,
+                cloud.provider.as_key(),
+            );
+            if !key.is_empty() {
+                cloud.api_key = key;
+            }
+            let app_c = app.clone();
+            Box::new(move |samples, _start_secs, prev_text| {
+                let st = app_c.state::<crate::AppState>();
+                let prompt = if prev_text.is_empty() { None } else { Some(prev_text) };
+                let text = crate::stt::run_cloud_stt(
+                    &cloud,
+                    samples,
+                    &st.http_client,
+                    prompt,
+                )
+                .unwrap_or_else(|e| {
+                    tracing::warn!("[import] cloud STT failed: {e}");
+                    String::new()
+                });
+                (text, vec![])
+            })
+        }
+    };
 
     // ── Step 6: Chunk and transcribe ──
     let chunk_size = 30 * 16_000; // 30 seconds per chunk
@@ -370,21 +367,19 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         let start_secs = chunk_start as f64 / 16_000.0;
         let end_secs = chunk_end as f64 / 16_000.0;
 
-        // VAD filter
-        let stt_samples =
-            crate::transcribe::filter_with_vad(&state.vad_ctx, chunk)
-                .unwrap_or_else(|_| chunk.to_vec());
-
         // Read previous context from WAL for STT prompt biasing.
         let prev_text = {
             let full = meeting_notes::read_wal(&history_dir, &note_id);
             meeting_notes::wal_text_for_context(&full, 200)
         };
 
-        let seg_text = if stt_samples.is_empty() {
-            String::new()
+        // Pass the raw (unfiltered) chunk to transcription so that DTW word
+        // timestamps are in the same time-space as diarization sub-segments.
+        // If the chunk is pure silence, both STT and diarization skip it gracefully.
+        let (seg_text, words) = if chunk.is_empty() {
+            (String::new(), vec![])
         } else {
-            transcribe(&stt_samples, &prev_text)
+            transcribe(chunk, start_secs, &prev_text)
         };
 
         if !seg_text.is_empty() {
@@ -406,23 +401,36 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
                 };
                 meeting_notes::append_wal(&history_dir, &note_id, &seg);
             } else {
-                // Assign the full STT text to the longest sub-segment; other
-                // sub-segments carry only the speaker label (empty text) so that
-                // update_wal_speakers can relabel them after agglomerative pass.
-                let longest_idx = sub_segs
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| {
-                        (a.1 - a.0)
-                            .partial_cmp(&(b.1 - b.0))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
+                // Assign words to sub-segments by DTW timestamp.
+                // Falls back to longest-sub-segment when no words are available
+                // (Qwen3Asr / Cloud engines that return empty word vec).
+                let mut seg_texts: Vec<String> = vec![String::new(); sub_segs.len()];
+                if words.is_empty() {
+                    let longest_idx = sub_segs
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| {
+                            (a.1 - a.0)
+                                .partial_cmp(&(b.1 - b.0))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    seg_texts[longest_idx] = seg_text.clone();
+                } else {
+                    for word in &words {
+                        let idx = sub_segs
+                            .iter()
+                            .position(|(s, e, _)| word.s >= *s && word.s < *e)
+                            .unwrap_or(sub_segs.len() - 1);
+                        seg_texts[idx].push_str(&word.w);
+                    }
+                    for t in &mut seg_texts {
+                        *t = t.trim().to_string();
+                    }
+                }
 
-                for (i, (s, e, spk)) in sub_segs.iter().enumerate() {
-                    let text =
-                        if i == longest_idx { seg_text.clone() } else { String::new() };
+                for ((s, e, spk), text) in sub_segs.iter().zip(seg_texts.into_iter()) {
                     let seg = meeting_notes::WalSegment {
                         speaker: spk.clone(),
                         start: *s,
