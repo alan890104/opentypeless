@@ -187,12 +187,10 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     }
 
     // ── Step 3: Determine STT engine ──
-    let stt_config = state
-        .settings
-        .lock()
-        .map_err(|e| e.to_string())?
-        .stt
-        .clone();
+    let (stt_config, diarization_enabled) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        (s.stt.clone(), s.meeting_diarization_enabled)
+    };
     let language = stt_config.language.clone();
 
     let model_label = match stt_config.mode {
@@ -252,6 +250,30 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         "meeting-note-created",
         serde_json::json!({ "id": note_id, "note": note }),
     );
+
+    // ── Step 4.5: Initialize diarization engine ──
+    let mut diarization: Option<crate::diarization::DiarizationEngine> = None;
+    if diarization_enabled {
+        let emb_path = settings::diarization_model_path();
+        let seg_path = settings::segmentation_model_path();
+        if emb_path.exists() {
+            let seg_opt = if seg_path.exists() { Some(seg_path.as_path()) } else { None };
+            match crate::diarization::DiarizationEngine::new(&emb_path, seg_opt) {
+                Ok(engine) => {
+                    tracing::info!("[import] diarization engine loaded");
+                    diarization = Some(engine);
+                }
+                Err(e) => {
+                    tracing::warn!("[import] failed to load diarization engine: {e}");
+                }
+            }
+        } else {
+            tracing::warn!(
+                "[import] diarization enabled but model not found at {}",
+                emb_path.display()
+            );
+        }
+    }
 
     // ── Step 5: Build transcribe closure ──
     let mut transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send> =
@@ -345,6 +367,8 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
 
         let chunk_end = (chunk_start + chunk_size).min(total_samples);
         let chunk = &samples_16k[chunk_start..chunk_end];
+        let start_secs = chunk_start as f64 / 16_000.0;
+        let end_secs = chunk_end as f64 / 16_000.0;
 
         // VAD filter
         let stt_samples =
@@ -364,23 +388,81 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         };
 
         if !seg_text.is_empty() {
-            let seg = meeting_notes::WalSegment {
-                speaker: String::new(),
-                start: chunk_start as f64 / 16_000.0,
-                end: chunk_end as f64 / 16_000.0,
-                text: seg_text.clone(),
-                words: vec![],
-            };
-            meeting_notes::append_wal(&history_dir, &note_id, &seg);
-            let _ = app.emit(
-                "meeting-note-updated",
-                serde_json::json!({
-                    "id": note_id,
-                    "delta": seg_text,
-                    "speaker": "",
-                    "duration_secs": duration_secs,
-                }),
-            );
+            if let Some(ref mut engine) = diarization {
+                // Diarization path: get speaker-labeled sub-segments.
+                let sub_segs = engine.process_vad_chunk(chunk, start_secs);
+                if sub_segs.is_empty() {
+                    // Diarization found no speech sub-segments; fall back to single entry.
+                    let seg = meeting_notes::WalSegment {
+                        speaker: String::new(),
+                        start: start_secs,
+                        end: end_secs,
+                        text: seg_text.clone(),
+                        words: vec![],
+                    };
+                    meeting_notes::append_wal(&history_dir, &note_id, &seg);
+                } else {
+                    // Assign the full STT text to the longest sub-segment; other
+                    // sub-segments carry only the speaker label (empty text) so that
+                    // update_wal_speakers can relabel them after agglomerative pass.
+                    let longest_idx = sub_segs
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| {
+                            (a.1 - a.0)
+                                .partial_cmp(&(b.1 - b.0))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+
+                    for (i, (s, e, spk)) in sub_segs.iter().enumerate() {
+                        let text =
+                            if i == longest_idx { seg_text.clone() } else { String::new() };
+                        let seg = meeting_notes::WalSegment {
+                            speaker: spk.clone(),
+                            start: *s,
+                            end: *e,
+                            text,
+                            words: vec![],
+                        };
+                        meeting_notes::append_wal(&history_dir, &note_id, &seg);
+                    }
+                }
+                let primary_speaker = sub_segs
+                    .first()
+                    .map(|(_, _, s)| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let _ = app.emit(
+                    "meeting-note-updated",
+                    serde_json::json!({
+                        "id": note_id,
+                        "delta": seg_text,
+                        "speaker": primary_speaker,
+                        "duration_secs": duration_secs,
+                    }),
+                );
+            } else {
+                // No diarization: original single-segment behavior.
+                let seg = meeting_notes::WalSegment {
+                    speaker: String::new(),
+                    start: start_secs,
+                    end: end_secs,
+                    text: seg_text.clone(),
+                    words: vec![],
+                };
+                meeting_notes::append_wal(&history_dir, &note_id, &seg);
+                let _ = app.emit(
+                    "meeting-note-updated",
+                    serde_json::json!({
+                        "id": note_id,
+                        "delta": seg_text,
+                        "speaker": "",
+                        "duration_secs": duration_secs,
+                    }),
+                );
+            }
         }
 
         let progress = chunk_end as f64 / total_samples as f64;
@@ -392,6 +474,20 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
                 "status": "transcribing",
             }),
         );
+    }
+
+    // ── Step 6.5: Agglomerative speaker label finalization ──
+    if let Some(ref mut engine) = diarization {
+        let labels = engine.finalize_labels();
+        if !labels.is_empty() {
+            let wal = meeting_notes::read_wal(&history_dir, &note_id);
+            let updated = meeting_notes::update_wal_speakers(&wal, &labels);
+            meeting_notes::write_wal(&history_dir, &note_id, &updated);
+            tracing::info!(
+                "[import] agglomerative relabeling complete: {} sub-segments",
+                labels.len()
+            );
+        }
     }
 
     // ── Step 7: Finalize ──
