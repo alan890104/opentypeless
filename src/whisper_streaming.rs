@@ -437,7 +437,9 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
             result[longest].text = text;
         }
 
-        result.retain(|s| !s.text.is_empty());
+        // Do NOT retain only non-empty segments: persist_and_emit writes all sub-segments
+        // to WAL (suppressing the frontend event for empty-text ones) so that
+        // update_wal_speakers can find them by (start, end) timestamp at meeting stop.
         result
     });
 

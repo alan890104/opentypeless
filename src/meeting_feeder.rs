@@ -135,14 +135,13 @@ fn run_meeting_worker(
 
         let prev_text = read_wal_context(&history_dir, &note_id);
 
-        let stt_samples =
-            crate::transcribe::filter_with_vad(&state.vad_ctx, &samples).unwrap_or(samples);
-
-        let wal_segments: Vec<crate::meeting_notes::WalSegment> = if stt_samples.is_empty() {
-            vec![]
-        } else {
-            transcribe(&stt_samples, start_secs, end_secs, &prev_text)
-        };
+        // Pass raw (unfiltered) samples to the transcribe closure so that both
+        // diarization (which maps sample offsets → absolute timestamps) and STT
+        // operate on the same audio, keeping timestamps consistent.
+        // The segmenter already gates on speech via coarse VAD, so chunks are
+        // speech-dominant; models handle the residual silence gracefully.
+        let wal_segments: Vec<crate::meeting_notes::WalSegment> =
+            transcribe(&samples, start_secs, end_secs, &prev_text);
 
         // Post-transcription session check (transcription may take 10–60s).
         let current_session = state.meeting_session.load(Ordering::SeqCst);
@@ -317,8 +316,11 @@ fn run_meeting_segmenter(
 /// duration cap (e.g. `Some(120 * 16_000)` for 120 s).  Pass `None` to
 /// disable.
 ///
-/// `transcribe` receives VAD-filtered 16 kHz samples, the segment start/end times
+/// `transcribe` receives raw (unfiltered) 16 kHz samples, the segment start/end times
 /// in seconds (relative to meeting start), and the previous WAL context string.
+/// Raw samples are passed so that diarization timestamps (sample offset ÷ 16 kHz)
+/// and STT output are in the same time space; each closure may apply VAD filtering
+/// internally for STT quality if desired.
 /// It returns `Vec<WalSegment>` — one per diarization sub-segment (may be >1
 /// when the segmentation model detects an intra-utterance speaker change).
 pub(crate) fn run_meeting_feeder(

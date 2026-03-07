@@ -391,6 +391,13 @@ pub struct DiarizationEngine {
     segment_buffer: Vec<(f64, f64, Vec<f32>)>,
 }
 
+// Compile-time proof: EmbeddingExtractor wraps ort::session::Session which is
+// Send in ort 2.x. If this assertion fails to compile, the unsafe impl below
+// must be removed.
+const _: fn() = || {
+    fn _assert_send<T: Send>() {}
+    _assert_send::<pyannote_rs::EmbeddingExtractor>();
+};
 // SAFETY: pyannote_rs::EmbeddingExtractor (v0.3.4) is a single-field struct
 // wrapping ort::session::Session, which declares `unsafe impl Send for Session {}`
 // in ort 2.0.0-rc.10 (session/mod.rs:565). All other fields (SpeakerClusters,
@@ -518,23 +525,36 @@ impl DiarizationEngine {
                 Ok(iter) => iter.collect(),
                 Err(e) => {
                     tracing::warn!("[diarization] embedding failed: {e}");
-                    result.push((start_secs, end_secs, String::new()));
+                    // Skip this sub-segment entirely: a WAL entry with speaker=""
+                    // cannot be corrected by update_wal_speakers (not in segment_buffer).
                     continue;
                 }
             };
 
             if raw_emb.is_empty() {
-                result.push((start_secs, end_secs, String::new()));
                 continue;
             }
 
             let emb = l2_normalize(&raw_emb);
 
             // Online clustering.
+            // Cap agglomerative buffer to avoid O(N³) blowup on very long meetings.
+            // At N=MAX_AGGLOMERATIVE_SEGS the final pass costs ~125 M float ops (~0.5 s).
+            // Segments beyond the cap still get an online cluster label; they are simply
+            // excluded from the agglomerative re-labeling pass at meeting end.
+            const MAX_AGGLOMERATIVE_SEGS: usize = 500;
             let speaker_id = if is_reliable {
                 // Reliable segment: may create new cluster, updates centroid, buffered.
                 let id = self.clusters.assign(emb.clone());
-                self.segment_buffer.push((start_secs, end_secs, emb));
+                if self.segment_buffer.len() < MAX_AGGLOMERATIVE_SEGS {
+                    self.segment_buffer.push((start_secs, end_secs, emb));
+                } else {
+                    tracing::warn!(
+                        "[diarization] segment_buffer at cap ({MAX_AGGLOMERATIVE_SEGS}); \
+                         sub-segment [{start_secs:.1}-{end_secs:.1}s] excluded from \
+                         agglomerative pass (online label kept)"
+                    );
+                }
                 id
             } else {
                 // Short/unreliable: assign to nearest existing cluster (no creation,
