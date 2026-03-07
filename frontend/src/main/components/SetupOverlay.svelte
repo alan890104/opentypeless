@@ -25,6 +25,7 @@
     markOnboardingComplete,
     buildPayload,
   } from '$lib/stores/settings.svelte';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import {
     checkPermissions,
     openPermissionSettings,
@@ -57,6 +58,8 @@
     saveApiKey,
     getApiKey,
     saveSettings as saveSettingsApi,
+    getDataRoot,
+    migrateDataRoot,
   } from '$lib/api';
   import type { DownloadProgress, PermissionStatus, WhisperModelId, WhisperModelInfo, PolishModelInfo, PolishModel, LocalSttEngine, Qwen3AsrModelId, Qwen3AsrModelInfo } from '$lib/types';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
@@ -69,6 +72,7 @@
 
   type SetupState =
     | 'permissions'
+    | 'dataRoot'
     | 'sttChoice'
     | 'downloading'
     | 'complete'
@@ -136,6 +140,40 @@
     // Fire-and-forget: start VAD + segmentation + embedding downloads in background.
     // By the time the user reaches finishSetup they will almost always be done.
     startInfraDownloads().catch(() => {});
+    currentState = 'dataRoot';
+    dataRootPath = await getDataRoot().catch(() => null);
+  }
+
+  // ── Data Root ──
+
+  let dataRootPath = $state<string | null>(null);
+  let dataRootError = $state('');
+
+  const dataRootDisplay = $derived(dataRootPath ?? t('setup.dataRootDefault'));
+
+  async function onDataRootChooseFolder() {
+    dataRootError = '';
+    const selected = await openDialog({ directory: true, multiple: false });
+    if (!selected || typeof selected !== 'string') return;
+    try {
+      await migrateDataRoot(selected, 'change_only');
+      dataRootPath = selected;
+    } catch (e) {
+      dataRootError = String(e);
+    }
+  }
+
+  async function onDataRootReset() {
+    dataRootError = '';
+    try {
+      await migrateDataRoot(null, 'reset');
+      dataRootPath = null;
+    } catch (e) {
+      dataRootError = String(e);
+    }
+  }
+
+  async function onDataRootContinue() {
     currentState = 'sttChoice';
     await fetchSttModels();
   }
@@ -845,6 +883,46 @@
             onclick={onPermissionsContinue}
           >
             {t('setup.permContinue')}
+          </button>
+        </div>
+      {/if}
+
+      <!-- ═══ Data Root ═══ -->
+      {#if currentState === 'dataRoot'}
+        <div class="setup-state-content" style="animation: setupFadeIn 0.4s ease">
+          <div class="setup-icon-folder">
+            <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 20C8 17.791 9.791 16 12 16H26L32 22H52C54.209 22 56 23.791 56 26V48C56 50.209 54.209 52 52 52H12C9.791 52 8 50.209 8 48V20Z" fill="#007AFF" opacity="0.12"/>
+              <path d="M8 20C8 17.791 9.791 16 12 16H26L32 22H52C54.209 22 56 23.791 56 26V48C56 50.209 54.209 52 52 52H12C9.791 52 8 50.209 8 48V20Z" stroke="#007AFF" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+
+          <div class="setup-title">{t('setup.dataRootTitle')}</div>
+          <div class="setup-desc">{t('setup.dataRootDesc')}</div>
+
+          <div class="setup-dataroot-row">
+            <div class="setup-dataroot-label-group">
+              <span class="setup-dataroot-label">{t('setup.dataRootCurrent')}</span>
+              <span class="setup-dataroot-path" title={dataRootDisplay}>{dataRootDisplay}</span>
+            </div>
+            <div class="setup-dataroot-btns">
+              <button class="setup-dataroot-btn" onclick={onDataRootChooseFolder}>
+                {t('setup.dataRootChoose')}
+              </button>
+              {#if dataRootPath}
+                <button class="setup-dataroot-btn secondary" onclick={onDataRootReset}>
+                  {t('setup.dataRootReset')}
+                </button>
+              {/if}
+            </div>
+          </div>
+
+          {#if dataRootError}
+            <p class="setup-dataroot-error">{dataRootError}</p>
+          {/if}
+
+          <button class="setup-continue-btn" onclick={onDataRootContinue}>
+            {t('setup.dataRootContinue')}
           </button>
         </div>
       {/if}
@@ -1647,6 +1725,85 @@
   /* ── Shield icon ── */
   .setup-icon-shield {
     margin-bottom: 20px;
+  }
+
+  /* ── Folder icon (data root step) ── */
+  .setup-icon-folder {
+    margin-bottom: 20px;
+  }
+
+  .setup-dataroot-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin: 0 auto 14px;
+    max-width: 360px;
+    width: 100%;
+  }
+
+  .setup-dataroot-label-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .setup-dataroot-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .setup-dataroot-path {
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+    direction: rtl;
+    text-align: left;
+  }
+
+  .setup-dataroot-btns {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .setup-dataroot-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+
+  .setup-dataroot-btn:hover {
+    background: var(--bg-hover);
+  }
+
+  .setup-dataroot-btn.secondary {
+    color: var(--text-secondary);
+  }
+
+  .setup-dataroot-error {
+    font-size: 12px;
+    color: #ff3b30;
+    margin: 0 auto 10px;
+    max-width: 360px;
   }
 
   /* ── Model list (polish choice) ── */

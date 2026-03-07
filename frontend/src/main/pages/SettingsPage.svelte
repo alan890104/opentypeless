@@ -8,6 +8,7 @@
   import MicSection from '../components/settings/MicSection.svelte';
   import SttSection from '../components/settings/SttSection.svelte';
   import PolishSection from '../components/settings/PolishSection.svelte';
+  import StorageSection from '../components/settings/StorageSection.svelte';
   import DangerZone from '../components/settings/DangerZone.svelte';
 
   let polishSectionEl = $state<HTMLElement | null>(null);
@@ -56,6 +57,9 @@
   >
     <PolishSection />
   </div>
+  <div class="section-divider"></div>
+
+  <StorageSection />
   <div class="section-divider"></div>
 
   <DangerZone />

@@ -890,6 +890,9 @@ pub fn run() {
             commands::delete_meeting_audio,
             commands::import_meeting_audio,
             commands::cancel_import,
+            commands::get_data_root,
+            commands::check_data_root_target,
+            commands::migrate_data_root,
             commands::start_infra_downloads,
             commands::check_infra_models_ready,
         ])

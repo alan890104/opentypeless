@@ -23,6 +23,8 @@ import type {
   TranscriptionPartialPayload,
   MeetingNote,
   PolishedMeetingNote,
+  DataRootCheckResult,
+  DataRootMigrationProgress,
 } from './types';
 
 // ── Settings ──
@@ -344,3 +346,18 @@ export const onImportProgress = (
   listen('import-progress', (e) =>
     cb(e.payload as { id?: string; progress: number; status: string }),
   );
+
+// ── Data root migration ──
+
+export const getDataRoot = () => invoke<string | null>('get_data_root');
+
+export const checkDataRootTarget = (newPath: string) =>
+  invoke<DataRootCheckResult>('check_data_root_target', { newPath });
+
+export const migrateDataRoot = (newPath: string | null, strategy: 'move' | 'change_only' | 'reset') =>
+  invoke<void>('migrate_data_root', { newPath, strategy });
+
+export const onDataRootMigrationProgress = (
+  cb: (p: DataRootMigrationProgress) => void,
+): Promise<UnlistenFn> =>
+  listen('data-root-migration-progress', (e) => cb(e.payload as DataRootMigrationProgress));
