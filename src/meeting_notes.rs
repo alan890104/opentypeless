@@ -311,10 +311,17 @@ pub fn update_wal_speakers(wal: &str, labels: &[(f64, f64, String)]) -> String {
                 Err(_) => return line.to_string(), // plain-text line — keep as-is
             };
             // Match by (start, end) within 10 ms tolerance.
-            if let Some((_, _, spk)) = labels.iter().find(|(s, e, _)| {
+            let matched = labels.iter().find(|(s, e, _)| {
                 (seg.start - s).abs() < 0.01 && (seg.end - e).abs() < 0.01
-            }) {
+            });
+            if let Some((_, _, spk)) = matched {
                 seg.speaker = spk.clone();
+            } else if !seg.speaker.is_empty() {
+                tracing::debug!(
+                    "[diarization] WAL segment [{:.3}–{:.3}s] not in agglomerative labels \
+                     — keeping online label {:?}",
+                    seg.start, seg.end, seg.speaker
+                );
             }
             serde_json::to_string(&seg).unwrap_or_else(|_| line.to_string())
         })

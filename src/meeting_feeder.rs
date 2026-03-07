@@ -138,8 +138,11 @@ fn run_meeting_worker(
         // Pass raw (unfiltered) samples to the transcribe closure so that both
         // diarization (which maps sample offsets → absolute timestamps) and STT
         // operate on the same audio, keeping timestamps consistent.
-        // The segmenter already gates on speech via coarse VAD, so chunks are
-        // speech-dominant; models handle the residual silence gracefully.
+        // Trade-off: applying filter_with_vad inside the Whisper closure for STT
+        // would re-introduce the timestamp mismatch (DTW word offsets would be in
+        // VAD-filtered time; diarization boundaries in raw time). The segmenter's
+        // coarse VAD gate ensures chunks are speech-dominant; any residual silence
+        // is handled gracefully by all three STT backends.
         let wal_segments: Vec<crate::meeting_notes::WalSegment> =
             transcribe(&samples, start_secs, end_secs, &prev_text);
 

@@ -2632,7 +2632,11 @@ pub fn download_diarization_model(app: AppHandle, state: State<'_, AppState>) ->
             );
             Ok(())
         })()
-        .unwrap_or_else(|e| emit_err(e));
+        .unwrap_or_else(|e| {
+            // Remove partial file so a retry starts clean rather than seeing a stale .part.
+            let _ = std::fs::remove_file(&tmp_path);
+            emit_err(e);
+        });
         app.state::<AppState>().downloading.store(false, Ordering::SeqCst);
     });
 
@@ -2746,7 +2750,11 @@ pub fn download_segmentation_model(app: AppHandle, state: State<'_, AppState>) -
             );
             Ok(())
         })()
-        .unwrap_or_else(|e| emit_err(e));
+        .unwrap_or_else(|e| {
+            // Remove partial file so a retry starts clean rather than seeing a stale .part.
+            let _ = std::fs::remove_file(&tmp_path);
+            emit_err(e);
+        });
         app.state::<AppState>().downloading.store(false, Ordering::SeqCst);
     });
 
