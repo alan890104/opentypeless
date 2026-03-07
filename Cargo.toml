@@ -38,7 +38,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 unicode-segmentation = "1.12.0"
 pyannote-rs = "0.3"
-ort = { version = "=2.0.0-rc.10", features = ["ndarray"] }
+ort = { version = "=2.0.0-rc.10", features = ["ndarray"] } # pinned: rc.10 ships bundled static ONNX Runtime; later RCs dropped it, requiring a separate dylib
 ndarray = "0.16"
 url = "2"
 tracing = "0.1"

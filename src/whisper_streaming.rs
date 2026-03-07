@@ -351,10 +351,14 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
 
         // Phase 1: diarization sub-segmentation (segmentation model + online cluster).
         // Returns (start_abs, end_abs, speaker_label) per sub-segment within this chunk.
+        // Take engine out of ctx before ONNX inference so delete operations are not
+        // blocked for the full inference duration; put it back immediately after.
         let sub_segs: Vec<(f64, f64, String)> = {
-            let mut ctx = state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref mut engine) = *ctx {
+            let maybe_engine =
+                state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(mut engine) = maybe_engine {
                 let segs = engine.process_vad_chunk(samples, start_secs);
+                *state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
                 if segs.is_empty() {
                     // Diarization engine found no speech — fall back to whole chunk.
                     vec![(start_secs, end_secs, String::new())]

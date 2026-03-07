@@ -347,10 +347,14 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, s
         let state = app_for_closure.state::<crate::AppState>();
 
         // Diarization sub-segmentation (segment model + online cluster).
+        // Take engine out of ctx before ONNX inference to avoid holding the lock
+        // for the full inference duration, which would block delete operations.
         let sub_segs: Vec<(f64, f64, String)> = {
-            let mut ctx = state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref mut engine) = *ctx {
+            let maybe_engine =
+                state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(mut engine) = maybe_engine {
                 let segs = engine.process_vad_chunk(samples, start_secs);
+                *state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
                 if segs.is_empty() { vec![(start_secs, end_secs, String::new())] } else { segs }
             } else {
                 vec![(start_secs, end_secs, String::new())]

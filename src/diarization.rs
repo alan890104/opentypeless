@@ -262,7 +262,7 @@ pub(crate) fn agglomerative_cluster(embeddings: &[Vec<f32>], threshold: f32) -> 
             break;
         }
 
-        // O(N²) — fine for N < ~200 segments per meeting.
+        // O(N³) total: O(N²) pairwise distances × O(N) merges. Fine for N < ~200 segments.
         let mut min_dist = f32::MAX;
         let mut min_i = 0;
         let mut min_j = 1;
@@ -622,7 +622,14 @@ pub fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
 }
 
 fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "cosine_dist: embedding dimension mismatch ({} vs {})", a.len(), b.len());
+    if a.len() != b.len() {
+        tracing::warn!(
+            "cosine_dist: embedding dimension mismatch ({} vs {}) — returning max distance",
+            a.len(),
+            b.len()
+        );
+        return 1.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
