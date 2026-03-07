@@ -864,6 +864,9 @@ pub fn run() {
             commands::check_diarization_model_status,
             commands::download_diarization_model,
             commands::delete_diarization_model,
+            commands::check_segmentation_model_status,
+            commands::download_segmentation_model,
+            commands::delete_segmentation_model,
             commands::update_meeting_hotkey,
             commands::list_meeting_notes,
             commands::get_meeting_note,
@@ -1862,10 +1865,12 @@ fn start_meeting_mode(app: &AppHandle) {
         if diarization_enabled {
             let model_path = settings::diarization_model_path();
             if model_path.exists() {
+                let seg_path = settings::segmentation_model_path();
+                let seg_opt = if seg_path.exists() { Some(seg_path.as_path()) } else { None };
                 match diar.as_mut() {
                     Some(engine) => engine.reset(),
                     None => {
-                        match diarization::DiarizationEngine::new(&model_path) {
+                        match diarization::DiarizationEngine::new(&model_path, seg_opt) {
                             Ok(engine) => *diar = Some(engine),
                             Err(e) => tracing::warn!("[diarization] failed to load model: {e}"),
                         }
@@ -2153,10 +2158,29 @@ fn stop_meeting_mode(app: &AppHandle) {
         .ok()
         .and_then(|nid| nid.clone());
     let hdir = settings::history_dir();
-    let transcript = note_id
+    let raw_transcript = note_id
         .as_deref()
         .map(|id| meeting_notes::read_wal(&hdir, id))
         .unwrap_or_default();
+
+    // Run agglomerative clustering over all buffered embeddings for optimal
+    // speaker labels, then update the WAL transcript before writing to SQLite.
+    let final_labels: Vec<(f64, f64, String)> = {
+        let mut diar = state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner());
+        diar.as_mut()
+            .map(|engine| engine.finalize_labels())
+            .unwrap_or_default()
+    };
+    let transcript = if final_labels.is_empty() {
+        raw_transcript
+    } else {
+        tracing::info!(
+            "[diarization] applying {} agglomerative labels to WAL",
+            final_labels.len()
+        );
+        meeting_notes::update_wal_speakers(&raw_transcript, &final_labels)
+    };
+
     if let Some(ref id) = note_id {
         if let Err(e) = meeting_notes::finalize_note(&hdir, id, &transcript, duration_secs) {
             tracing::error!("Failed to finalize meeting note: {}", e);

@@ -5803,6 +5803,7 @@ dependencies = [
  "image",
  "keyring",
  "libc",
+ "ndarray",
  "ort",
  "pyannote-rs",
  "qwen3-asr",

@@ -75,12 +75,20 @@ fn persist_and_emit(
 
 /// Worker thread: receives segments from the segmenter, transcribes them,
 /// and persists/emits each result.
+///
+/// The `transcribe` closure returns `Vec<WalSegment>` — one entry per
+/// diarization sub-segment within the VAD chunk (may be >1 when the
+/// segmentation model detects an intra-utterance speaker change).
 fn run_meeting_worker(
     app: AppHandle,
     session_id: u64,
     label: &str,
     rx: mpsc::Receiver<Segment>,
-    mut transcribe: Box<dyn FnMut(&[f32], f64, f64, &str) -> crate::meeting_notes::WalSegment + Send + 'static>,
+    mut transcribe: Box<
+        dyn FnMut(&[f32], f64, f64, &str) -> Vec<crate::meeting_notes::WalSegment>
+            + Send
+            + 'static,
+    >,
 ) {
     let state = app.state::<crate::AppState>();
     let history_dir = crate::settings::history_dir();
@@ -95,25 +103,27 @@ fn run_meeting_worker(
         let current_session = state.meeting_session.load(Ordering::SeqCst);
         if current_session != session_id {
             tracing::warn!(
-                "[{label}] worker: stale session ({session_id} vs {current_session}) — aborting, remaining segments will be dropped",
+                "[{label}] worker: stale session ({session_id} vs {current_session}) — aborting",
             );
             break;
         }
 
-        // Check cancellation — skip remaining segments.
         if state.meeting_cancelled.load(Ordering::SeqCst) {
             tracing::warn!("[{label}] worker: cancelled — skipping remaining segments");
             break;
         }
 
         let (samples, start_secs, end_secs, is_final) = match segment {
-            Segment::Tick { samples, start_secs, end_secs } => (samples, start_secs, end_secs, false),
-            Segment::Final { samples, start_secs, end_secs } => (samples, start_secs, end_secs, true),
+            Segment::Tick { samples, start_secs, end_secs } => {
+                (samples, start_secs, end_secs, false)
+            }
+            Segment::Final { samples, start_secs, end_secs } => {
+                (samples, start_secs, end_secs, true)
+            }
         };
 
         if samples.is_empty() {
             if is_final {
-                // Empty Final = clean stop with no trailing audio; nothing more will arrive.
                 tracing::debug!("[{label}] worker: empty final segment, nothing to transcribe");
                 break;
             }
@@ -122,17 +132,11 @@ fn run_meeting_worker(
 
         let prev_text = read_wal_context(&history_dir, &note_id);
 
-        let stt_samples = crate::transcribe::filter_with_vad(&state.vad_ctx, &samples)
-            .unwrap_or(samples);
+        let stt_samples =
+            crate::transcribe::filter_with_vad(&state.vad_ctx, &samples).unwrap_or(samples);
 
-        let wal_segment = if stt_samples.is_empty() {
-            crate::meeting_notes::WalSegment {
-                speaker: String::new(),
-                start: start_secs,
-                end: end_secs,
-                text: String::new(),
-                words: vec![],
-            }
+        let wal_segments: Vec<crate::meeting_notes::WalSegment> = if stt_samples.is_empty() {
+            vec![]
         } else {
             transcribe(&stt_samples, start_secs, end_secs, &prev_text)
         };
@@ -141,17 +145,19 @@ fn run_meeting_worker(
         let current_session = state.meeting_session.load(Ordering::SeqCst);
         if current_session != session_id {
             tracing::warn!(
-                "[{label}] worker: session advanced during transcription ({session_id} vs {current_session}) — discarding result",
+                "[{label}] worker: session advanced during transcription ({session_id} vs {current_session}) — discarding",
             );
             break;
         }
 
         if state.meeting_cancelled.load(Ordering::SeqCst) {
-            tracing::warn!("[{label}] worker: cancelled after transcription — discarding result");
+            tracing::warn!("[{label}] worker: cancelled after transcription — discarding");
             break;
         }
 
-        persist_and_emit(&app, &state, &history_dir, &note_id, &wal_segment);
+        for seg in &wal_segments {
+            persist_and_emit(&app, &state, &history_dir, &note_id, seg);
+        }
     }
 
     tracing::info!("[{label}] worker: finished processing all segments");
@@ -310,13 +316,18 @@ fn run_meeting_segmenter(
 ///
 /// `transcribe` receives VAD-filtered 16 kHz samples, the segment start/end times
 /// in seconds (relative to meeting start), and the previous WAL context string.
-/// It returns a `WalSegment` with the transcribed text, speaker label, and word timestamps.
+/// It returns `Vec<WalSegment>` — one per diarization sub-segment (may be >1
+/// when the segmentation model detects an intra-utterance speaker change).
 pub(crate) fn run_meeting_feeder(
     app: AppHandle,
     session_id: u64,
     label: &str,
     max_segment_samples: Option<usize>,
-    transcribe: Box<dyn FnMut(&[f32], f64, f64, &str) -> crate::meeting_notes::WalSegment + Send + 'static>,
+    transcribe: Box<
+        dyn FnMut(&[f32], f64, f64, &str) -> Vec<crate::meeting_notes::WalSegment>
+            + Send
+            + 'static,
+    >,
 ) {
     let (tx, rx) = mpsc::channel::<Segment>();
 

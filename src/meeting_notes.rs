@@ -290,6 +290,38 @@ pub fn remove_wal(history_dir: &Path, id: &str) {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Rewrite speaker labels in a JSONL WAL transcript using agglomerative labels.
+///
+/// Each WAL line that matches a `(start_secs, end_secs)` pair in `labels`
+/// has its `speaker` field updated.  Lines that do not match (plain text or
+/// mismatched timestamps) are passed through unchanged.
+///
+/// Called in `stop_meeting_mode` after `finalize_labels()` to upgrade the
+/// real-time online labels to globally-optimal agglomerative labels before
+/// writing the transcript to SQLite.
+pub fn update_wal_speakers(wal: &str, labels: &[(f64, f64, String)]) -> String {
+    wal.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return line.to_string();
+            }
+            let mut seg: WalSegment = match serde_json::from_str(trimmed) {
+                Ok(s) => s,
+                Err(_) => return line.to_string(), // plain-text line — keep as-is
+            };
+            // Match by (start, end) within 10 ms tolerance.
+            if let Some((_, _, spk)) = labels.iter().find(|(s, e, _)| {
+                (seg.start - s).abs() < 0.01 && (seg.end - e).abs() < 0.01
+            }) {
+                seg.speaker = spk.clone();
+            }
+            serde_json::to_string(&seg).unwrap_or_else(|_| line.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn finalize_note(
     history_dir: &Path,
     id: &str,
@@ -544,13 +576,14 @@ mod tests {
         let mut note = make_note("stuck");
         note.is_recording = true;
         create_note(p, &note).unwrap();
-        append_wal(p, "stuck", "recovered text");
+        append_wal(p, "stuck", &make_seg("recovered text"));
 
         recover_stuck_notes(p);
 
         let fetched = get_note(p, "stuck").unwrap();
         assert!(!fetched.is_recording);
-        assert_eq!(fetched.transcript, "recovered text");
+        // Transcript is stored as raw JSONL; verify the text is present via transcript_from_wal.
+        assert!(transcript_from_wal(&fetched.transcript).contains("recovered text"));
         assert_eq!(read_wal(p, "stuck"), "", "WAL should be cleaned up");
     }
 
@@ -578,7 +611,7 @@ mod tests {
         let p = dir.path();
         init_db(p);
         create_note(p, &make_note("1")).unwrap();
-        append_wal(p, "1", "data");
+        append_wal(p, "1", &make_seg("data"));
         delete_all_notes(p).unwrap();
         assert!(list_notes(p).is_empty());
         assert_eq!(read_wal(p, "1"), "");

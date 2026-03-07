@@ -2684,6 +2684,153 @@ pub fn delete_diarization_model(state: State<'_, AppState>) -> Result<u64, Strin
     Ok(size)
 }
 
+// ── Segmentation model (pyannote segmentation-3.0.onnx) ──
+
+#[tauri::command]
+pub fn check_segmentation_model_status() -> serde_json::Value {
+    let path = crate::settings::segmentation_model_path();
+    let downloaded = path.exists();
+    let file_size_on_disk = if downloaded {
+        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
+    serde_json::json!({
+        "downloaded": downloaded,
+        "file_size_on_disk": file_size_on_disk,
+        "url": crate::diarization::SEGMENTATION_URL,
+    })
+}
+
+#[tauri::command]
+pub fn download_segmentation_model(app: AppHandle) -> Result<(), String> {
+    use std::io::Read as _;
+
+    let url = crate::diarization::SEGMENTATION_URL;
+    let model_path = crate::settings::segmentation_model_path();
+    if model_path.exists() {
+        let _ = app.emit(
+            "segmentation-model-download-progress",
+            serde_json::json!({ "status": "complete" }),
+        );
+        return Ok(());
+    }
+
+    if let Some(dir) = model_path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+
+    let tmp_path = model_path.with_extension("onnx.part");
+    let _ = std::fs::remove_file(&tmp_path);
+
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app.emit(
+                    "segmentation-model-download-progress",
+                    serde_json::json!({ "status": "error", "message": e.to_string() }),
+                );
+                return;
+            }
+        };
+
+        let resp = match client.get(url).send() {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = app.emit(
+                    "segmentation-model-download-progress",
+                    serde_json::json!({ "status": "error", "message": e.to_string() }),
+                );
+                return;
+            }
+        };
+
+        let total = resp.content_length().unwrap_or(0);
+        let mut file = match std::fs::File::create(&tmp_path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = app.emit(
+                    "segmentation-model-download-progress",
+                    serde_json::json!({ "status": "error", "message": e.to_string() }),
+                );
+                return;
+            }
+        };
+
+        let mut downloaded: u64 = 0;
+        let mut buf = [0u8; 65536];
+        let mut reader = resp;
+
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = app.emit(
+                        "segmentation-model-download-progress",
+                        serde_json::json!({ "status": "error", "message": e.to_string() }),
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = std::io::Write::write_all(&mut file, &buf[..n]) {
+                let _ = app.emit(
+                    "segmentation-model-download-progress",
+                    serde_json::json!({ "status": "error", "message": e.to_string() }),
+                );
+                return;
+            }
+            downloaded += n as u64;
+            let _ = app.emit(
+                "segmentation-model-download-progress",
+                serde_json::json!({ "downloaded": downloaded, "total": total }),
+            );
+        }
+
+        drop(file);
+        if let Err(e) = std::fs::rename(&tmp_path, &model_path) {
+            let _ = app.emit(
+                "segmentation-model-download-progress",
+                serde_json::json!({ "status": "error", "message": e.to_string() }),
+            );
+            return;
+        }
+
+        let _ = app.emit(
+            "segmentation-model-download-progress",
+            serde_json::json!({ "status": "complete" }),
+        );
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_segmentation_model(state: State<'_, AppState>) -> Result<u64, String> {
+    guard_model_op(&state)?;
+
+    let path = crate::settings::segmentation_model_path();
+    if !path.exists() {
+        return Err("Segmentation model not found".to_string());
+    }
+
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    // Unload the engine so the next meeting session reloads without segmentation.
+    if let Ok(mut ctx) = state.diarization_ctx.lock() {
+        *ctx = None;
+    }
+
+    std::fs::remove_file(&path)
+        .map_err(|e| format!("Failed to delete segmentation model: {e}"))?;
+    tracing::info!("Deleted segmentation model, freed {} bytes", size);
+    Ok(size)
+}
+
 // ── Meeting Notes ──
 
 #[tauri::command]
