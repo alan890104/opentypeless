@@ -388,63 +388,15 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         };
 
         if !seg_text.is_empty() {
-            if let Some(ref mut engine) = diarization {
-                // Diarization path: get speaker-labeled sub-segments.
-                let sub_segs = engine.process_vad_chunk(chunk, start_secs);
-                if sub_segs.is_empty() {
-                    // Diarization found no speech sub-segments; fall back to single entry.
-                    let seg = meeting_notes::WalSegment {
-                        speaker: String::new(),
-                        start: start_secs,
-                        end: end_secs,
-                        text: seg_text.clone(),
-                        words: vec![],
-                    };
-                    meeting_notes::append_wal(&history_dir, &note_id, &seg);
-                } else {
-                    // Assign the full STT text to the longest sub-segment; other
-                    // sub-segments carry only the speaker label (empty text) so that
-                    // update_wal_speakers can relabel them after agglomerative pass.
-                    let longest_idx = sub_segs
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| {
-                            (a.1 - a.0)
-                                .partial_cmp(&(b.1 - b.0))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
+            // Get diarization sub-segments (empty vec when diarization is off or
+            // the model found no speech in this chunk).
+            let sub_segs: Vec<(f64, f64, String)> = diarization
+                .as_mut()
+                .map(|e| e.process_vad_chunk(chunk, start_secs))
+                .unwrap_or_default();
 
-                    for (i, (s, e, spk)) in sub_segs.iter().enumerate() {
-                        let text =
-                            if i == longest_idx { seg_text.clone() } else { String::new() };
-                        let seg = meeting_notes::WalSegment {
-                            speaker: spk.clone(),
-                            start: *s,
-                            end: *e,
-                            text,
-                            words: vec![],
-                        };
-                        meeting_notes::append_wal(&history_dir, &note_id, &seg);
-                    }
-                }
-                let primary_speaker = sub_segs
-                    .first()
-                    .map(|(_, _, s)| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let _ = app.emit(
-                    "meeting-note-updated",
-                    serde_json::json!({
-                        "id": note_id,
-                        "delta": seg_text,
-                        "speaker": primary_speaker,
-                        "duration_secs": duration_secs,
-                    }),
-                );
-            } else {
-                // No diarization: original single-segment behavior.
+            if sub_segs.is_empty() {
+                // No sub-segments: single WAL entry with empty speaker.
                 let seg = meeting_notes::WalSegment {
                     speaker: String::new(),
                     start: start_secs,
@@ -453,16 +405,48 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
                     words: vec![],
                 };
                 meeting_notes::append_wal(&history_dir, &note_id, &seg);
-                let _ = app.emit(
-                    "meeting-note-updated",
-                    serde_json::json!({
-                        "id": note_id,
-                        "delta": seg_text,
-                        "speaker": "",
-                        "duration_secs": duration_secs,
-                    }),
-                );
+            } else {
+                // Assign the full STT text to the longest sub-segment; other
+                // sub-segments carry only the speaker label (empty text) so that
+                // update_wal_speakers can relabel them after agglomerative pass.
+                let longest_idx = sub_segs
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        (a.1 - a.0)
+                            .partial_cmp(&(b.1 - b.0))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+
+                for (i, (s, e, spk)) in sub_segs.iter().enumerate() {
+                    let text =
+                        if i == longest_idx { seg_text.clone() } else { String::new() };
+                    let seg = meeting_notes::WalSegment {
+                        speaker: spk.clone(),
+                        start: *s,
+                        end: *e,
+                        text,
+                        words: vec![],
+                    };
+                    meeting_notes::append_wal(&history_dir, &note_id, &seg);
+                }
             }
+            let primary_speaker = sub_segs
+                .first()
+                .map(|(_, _, s)| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = app.emit(
+                "meeting-note-updated",
+                serde_json::json!({
+                    "id": note_id,
+                    "delta": seg_text,
+                    "speaker": primary_speaker,
+                    "duration_secs": duration_secs,
+                }),
+            );
         }
 
         let progress = chunk_end as f64 / total_samples as f64;
@@ -477,21 +461,26 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     }
 
     // ── Step 6.5: Agglomerative speaker label finalization ──
-    if let Some(ref mut engine) = diarization {
+    // Returns the updated WAL content so Step 7 can reuse it without a second disk read.
+    let agglomerative_wal: Option<String> = diarization.as_mut().and_then(|engine| {
         let labels = engine.finalize_labels();
-        if !labels.is_empty() {
-            let wal = meeting_notes::read_wal(&history_dir, &note_id);
-            let updated = meeting_notes::update_wal_speakers(&wal, &labels);
-            meeting_notes::write_wal(&history_dir, &note_id, &updated);
-            tracing::info!(
-                "[import] agglomerative relabeling complete: {} sub-segments",
-                labels.len()
-            );
+        if labels.is_empty() {
+            return None;
         }
-    }
+        let wal = meeting_notes::read_wal(&history_dir, &note_id);
+        let updated = meeting_notes::update_wal_speakers(&wal, &labels);
+        meeting_notes::write_wal(&history_dir, &note_id, &updated);
+        tracing::info!(
+            "[import] agglomerative relabeling complete: {} sub-segments",
+            labels.len()
+        );
+        Some(updated)
+    });
 
     // ── Step 7: Finalize ──
-    let transcript = meeting_notes::read_wal(&history_dir, &note_id);
+    // Reuse the in-memory WAL if agglomerative relabeling ran; otherwise read from disk.
+    let transcript = agglomerative_wal
+        .unwrap_or_else(|| meeting_notes::read_wal(&history_dir, &note_id));
     meeting_notes::finalize_note(&history_dir, &note_id, &transcript, duration_secs)
         .map_err(|e| format!("Failed to finalize note: {e}"))?;
     meeting_notes::remove_wal(&history_dir, &note_id);
