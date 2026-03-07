@@ -69,11 +69,6 @@ fn decode_audio_file(path: &str) -> Result<(Vec<f32>, u32, f64), String> {
         .codec_params
         .sample_rate
         .ok_or("Could not determine sample rate")?;
-    let channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(1);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -104,17 +99,22 @@ fn decode_audio_file(path: &str) -> Result<(Vec<f32>, u32, f64), String> {
             Ok(decoded) => {
                 let spec = *decoded.spec();
                 let num_frames = decoded.frames();
+                // Read channel count from the decoded buffer spec, NOT
+                // track metadata. M4A files often omit channel info in
+                // codec params, causing unwrap_or(1) to treat stereo
+                // interleaved [L,R,L,R,...] data as mono → garbled audio.
+                let ch = spec.channels.count();
                 let mut sample_buf =
                     SampleBuffer::<f32>::new(num_frames as u64, spec);
                 sample_buf.copy_interleaved_ref(decoded);
 
                 let samples = sample_buf.samples();
-                if channels == 1 {
+                if ch <= 1 {
                     all_samples.extend_from_slice(samples);
                 } else {
-                    for chunk in samples.chunks(channels) {
+                    for chunk in samples.chunks(ch) {
                         all_samples
-                            .push(chunk.iter().sum::<f32>() / channels as f32);
+                            .push(chunk.iter().sum::<f32>() / ch as f32);
                     }
                 }
             }
@@ -166,11 +166,13 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     );
 
     let (samples, sample_rate, duration_secs) = decode_audio_file(file_path)?;
+    let decoded_rms = crate::audio::rms(&samples);
     tracing::info!(
-        "[import] decoded: {:.1}s @ {} Hz, {} samples",
+        "[import] decoded: {:.1}s @ {} Hz, {} samples (mono), RMS={:.5}",
         duration_secs,
         sample_rate,
-        samples.len()
+        samples.len(),
+        decoded_rms
     );
 
     // ── Step 2: Resample to 16 kHz ──
