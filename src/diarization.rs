@@ -16,7 +16,7 @@
 //! ## Finalization (at meeting stop, matches the experiment's quality)
 //! ```text
 //! buffered (start, end, embedding) for all sub-segments
-//!   → agglomerative hierarchical clustering (average linkage, threshold=0.65)
+//!   → agglomerative hierarchical clustering (single linkage, threshold=0.65)
 //!   → optimal speaker labels  (same algorithm as exp_g_diarize_agglomerative.rs)
 //!   → update WAL speaker fields before writing to SQLite
 //! ```
@@ -253,27 +253,32 @@ pub(crate) fn agglomerative_cluster(embeddings: &[Vec<f32>], threshold: f32) -> 
         return vec![0];
     }
 
-    // clusters: (member_indices, L2-normalised_centroid, member_count)
-    let mut clusters: Vec<(Vec<usize>, Vec<f32>, usize)> = embeddings
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (vec![i], e.clone(), 1))
-        .collect();
+    // clusters: member_indices into `embeddings`.
+    // Single-linkage: distance between clusters = minimum pairwise distance across members.
+    // Single-linkage allows a short-duration "bridge" segment to chain a mis-labelled
+    // segment back into the correct speaker cluster (average/centroid linkage would
+    // keep it isolated when its mean is far from the cluster centroid).
+    //
+    // O(N³) total: O(N²) cluster pairs × O(n_i × n_j) inner loop × O(N) merges.
+    // N is capped at MAX_AGGLOMERATIVE_SEGS (200) in process_vad_chunk.
+    let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
 
     loop {
         if clusters.len() <= 1 {
             break;
         }
 
-        // O(N³) total: O(N²) pairwise distances × O(N) merges.
-        // N is capped at MAX_AGGLOMERATIVE_SEGS (200) in process_vad_chunk, bounding
-        // the worst-case to ~200³/6 × 1.5 k flops ≈ 2 billion flops (~1 s on CPU).
         let mut min_dist = f32::MAX;
         let mut min_i = 0;
         let mut min_j = 1;
         for i in 0..clusters.len() {
             for j in (i + 1)..clusters.len() {
-                let d = cosine_dist(&clusters[i].1, &clusters[j].1);
+                // Single linkage: minimum distance between any pair of members.
+                let d = clusters[i]
+                    .iter()
+                    .flat_map(|&ii| clusters[j].iter().map(move |&jj| (ii, jj)))
+                    .map(|(ii, jj)| cosine_dist(&embeddings[ii], &embeddings[jj]))
+                    .fold(f32::MAX, f32::min);
                 if d < min_dist {
                     min_dist = d;
                     min_i = i;
@@ -286,31 +291,17 @@ pub(crate) fn agglomerative_cluster(embeddings: &[Vec<f32>], threshold: f32) -> 
             break;
         }
 
-        // Merge j into i: weighted-mean centroid, then re-normalise.
-        let n_i = clusters[min_i].2 as f32;
-        let n_j = clusters[min_j].2 as f32;
-        let total = n_i + n_j;
-        let new_centroid: Vec<f32> = clusters[min_i]
-            .1
-            .iter()
-            .zip(clusters[min_j].1.iter())
-            .map(|(a, b)| (a * n_i + b * n_j) / total)
-            .collect();
-
-        let indices_j = clusters[min_j].0.clone();
-        let count_j = clusters[min_j].2;
-        clusters[min_i].0.extend(indices_j);
-        clusters[min_i].1 = l2_normalize(&new_centroid);
-        clusters[min_i].2 += count_j;
-        clusters.remove(min_j);
+        // Merge j into i.
+        let members_j = clusters.remove(min_j);
+        clusters[min_i].extend(members_j);
     }
 
     // Assign labels ordered by first-appearance index (stable, human-readable).
-    clusters.sort_by_key(|(indices, _, _)| *indices.iter().min().unwrap_or(&0));
+    clusters.sort_by_key(|members| *members.iter().min().unwrap_or(&0));
 
     let mut labels = vec![0usize; n];
-    for (label, (indices, _, _)) in clusters.iter().enumerate() {
-        for &idx in indices {
+    for (label, members) in clusters.iter().enumerate() {
+        for &idx in members {
             labels[idx] = label;
         }
     }
@@ -451,7 +442,7 @@ impl DiarizationEngine {
             // Threshold calibrated for campplus_zh_cn_common_200k.onnx + 5 s cap.
             // Pairwise distance analysis on kkshow (3 spk, Mandarin):
             //   same-speaker: 0.13–0.45  different-speaker: 0.69–0.89
-            // 0.65 sits safely in the gap; applies to both online and agglomerative.
+            // 0.65 sits in the gap; applies to both online and agglomerative.
             clusters: SpeakerClusters::new(0.65),
             segment_buffer: Vec::new(),
         })
