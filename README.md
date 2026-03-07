@@ -62,12 +62,14 @@ LLM rewriting works the same way: local models via candle with Metal/CUDA (Llama
 
 In full local mode, audio never leaves your Mac. You can verify that because the code is here.
 
+When idle: about 130 MB and 0% CPU. The first local transcription loads Whisper into GPU memory and RSS climbs to around 730 MB, but Metal runs the inference so CPU stays under 20%. Cloud mode barely registers — 7 MB during the recording, then back to 0% the moment it's done.
+
 Other things worth knowing:
 
-- Edit by Voice: select text, press `Ctrl+Option+Z`, speak an instruction ("translate this to English", "make it shorter"), AI rewrites and pastes it back
-- Meeting mode: continuous transcription that saves to a note file as you talk — good for calls or lectures where you don't want to babysit a recording
-- Silero VAD for silence filtering before transcription (optional — it needs a separate model download)
-- Custom dictionary: proper nouns you add get injected into both the Whisper prompt and the LLM context, so they don't get mangled
+- Edit by Voice: select text, press `Ctrl+Option+Z`, say what you want done. The AI rewrites and pastes it back.
+- Meeting mode: runs in the background and transcribes into a note file. No babysitting.
+- Silero VAD for silence filtering before transcription (optional, needs a separate model download)
+- Custom dictionary: words you add show up in both the Whisper prompt and LLM context, so names and terms don't get mangled
 - Transcription history with audio playback, 58 UI languages, customizable hotkeys
 
 ## How to use it
@@ -89,7 +91,7 @@ To edit text by voice: select it, press `Ctrl+Option+Z`, say what you want done 
 |---|---|---|---|---|---|---|
 | **Price** | **Free** | Free | 4K words/wk free, $12-30/mo | 2K words/wk free, $12-15/mo | $25-49 (one-time) | Free trial, ~$8/mo |
 | **Open Source** | ✅ GPLv3 | ❌ | ❌ | ❌ | ✅ GPLv3 | ❌ |
-| **Local STT** | ✅ Whisper+Metal | ✅ Apple Silicon | ❌ Cloud only | ❌ Cloud only | ✅ | ✅ |
+| **Local STT** | ✅ | ✅ Apple Silicon | ❌ Cloud only | ❌ Cloud only | ✅ | ✅ |
 | **Cloud STT** | ✅ BYOK | ❌ | ✅ | ✅ | ✅ Optional | ✅ |
 | **AI Polish** | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **Local LLM Polish** | ✅ 3 models | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -98,6 +100,7 @@ To edit text by voice: select it, press `Ctrl+Option+Z`, say what you want done 
 | **Edit by Voice** | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ |
 | **Dictionary** | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **History** | ✅ + audio export | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Meeting notes** | ✅ | ❌ | - | ❌ | - | ✅ |
 | **Platforms** | macOS | macOS, iOS | macOS, Win, iOS, Android | macOS, Win, iOS, Android | macOS | macOS, Win, iOS |
 
 ## Installation

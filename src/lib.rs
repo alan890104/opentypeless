@@ -886,6 +886,8 @@ pub fn run() {
             commands::delete_all_meeting_notes,
             commands::get_active_meeting_note_id,
             commands::polish_meeting_note,
+            commands::export_meeting_audio,
+            commands::delete_meeting_audio,
             commands::import_meeting_audio,
             commands::cancel_import,
             commands::start_infra_downloads,
@@ -954,7 +956,7 @@ pub fn run() {
 
             // Init meeting notes schema & recover notes stuck from a previous crash
             meeting_notes::init_db(&history_dir());
-            meeting_notes::recover_stuck_notes(&history_dir());
+            meeting_notes::recover_stuck_notes(&history_dir(), &audio_dir());
 
             // Remove obsolete model files in the background (non-blocking).
             {
@@ -1980,6 +1982,7 @@ fn start_meeting_mode(app: &AppHandle) {
             is_recording: true,
             word_count: 0,
             summary: String::new(),
+            audio_path: None,
         };
         if let Err(e) = meeting_notes::create_note(&settings::history_dir(), &note) {
             tracing::error!("Failed to create meeting note: {}", e);
@@ -2192,6 +2195,13 @@ fn stop_meeting_mode(app: &AppHandle) {
             tracing::error!("Failed to finalize meeting note: {}", e);
         }
         meeting_notes::remove_wal(&hdir, id);
+        // Finalize audio WAL → WAV (no-op if record_meeting_audio was off).
+        let audio_path = meeting_notes::finalize_audio(&hdir, id, &settings::audio_dir());
+        if let Some(ref ap) = audio_path {
+            if let Err(e) = meeting_notes::update_audio_path(&hdir, id, ap) {
+                tracing::warn!("Failed to update audio_path for meeting note {}: {}", id, e);
+            }
+        }
         let _ = app.emit(
             "meeting-note-finalized",
             serde_json::json!({ "id": id }),

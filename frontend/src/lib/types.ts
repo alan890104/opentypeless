@@ -149,6 +149,7 @@ export interface Settings {
   mic_device: string | null;
   meeting_hotkey: string | null;
   idle_mic_timeout_secs: number;
+  record_meeting_audio: boolean;
 }
 
 // ── History ──
@@ -246,6 +247,7 @@ export interface MeetingNote {
   is_recording: boolean;
   word_count: number;
   summary: string;
+  audio_path: string | null;
 }
 
 export interface PolishedMeetingNote {

@@ -35,6 +35,10 @@ pub struct Settings {
     /// to prevent CoreAudio DSP (echo cancellation, AGC) from affecting other apps.
     #[serde(default = "default_idle_mic_timeout_secs")]
     pub idle_mic_timeout_secs: u32,
+    /// When true, the raw audio of each meeting is archived as a WAV file alongside
+    /// the transcript.  Defaults to false (opt-in, privacy-sensitive feature).
+    #[serde(default)]
+    pub record_meeting_audio: bool,
 }
 
 fn default_idle_mic_timeout_secs() -> u32 {
@@ -68,6 +72,7 @@ impl Default for Settings {
             mic_device: None,
             meeting_hotkey,
             idle_mic_timeout_secs: default_idle_mic_timeout_secs(),
+            record_meeting_audio: false,
         }
     }
 }

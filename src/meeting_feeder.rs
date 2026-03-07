@@ -176,6 +176,7 @@ fn run_meeting_segmenter(
     label: &str,
     max_segment_samples: Option<usize>,
     tx: mpsc::Sender<Segment>,
+    _audio_note_id: &Option<String>,
 ) {
     let state = app.state::<crate::AppState>();
     let sr = state
@@ -339,13 +340,19 @@ pub(crate) fn run_meeting_feeder(
 ) {
     let (tx, rx) = mpsc::channel::<Segment>();
 
+    // Read note_id once so the segmenter and worker both see the same value.
+    let audio_note_id: Option<String> = {
+        let state = app.state::<crate::AppState>();
+        state.active_meeting_note_id.lock().ok().and_then(|n| n.clone())
+    };
+
     let label_owned = label.to_string();
     let worker_app = app.clone();
     let worker = std::thread::spawn(move || {
         run_meeting_worker(worker_app, session_id, &label_owned, rx, transcribe);
     });
 
-    run_meeting_segmenter(&app, session_id, label, max_segment_samples, tx);
+    run_meeting_segmenter(&app, session_id, label, max_segment_samples, tx, &audio_note_id);
     // tx dropped when run_meeting_segmenter returns → channel closes → worker exits.
 
     tracing::info!("[{label}] segmenter done, waiting for worker to finish");
