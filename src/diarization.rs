@@ -1287,8 +1287,13 @@ pub(crate) fn pyannote_diarize(
     // only (window, speaker) pairs where the speaker is EXCLUSIVELY active for at
     // least 20 % of the 589-frame window are used for centroid-linkage clustering.
     // Others are still assigned to the nearest centroid after clustering.
-    // ceil(0.2 * 589) = ceil(117.8) = 118 frames ≈ 2 s of exclusive speech.
-    const MIN_RELIABLE_FRAMES: usize = 118;
+    //
+    // pyannote default: ceil(0.2 * 589) = 118 frames ≈ 2 s exclusive speech.
+    // We use 30 frames (≈ 0.5 s, ~5 % of the window) instead because conversational
+    // audio typically has shorter turns — if speaker B only speaks for 1–2 s per 10 s
+    // window, they never hit 118 exclusive frames and their embeddings all get assigned
+    // to the dominant speaker's centroid, collapsing 2 speakers → 1.
+    const MIN_RELIABLE_FRAMES: usize = 30;
 
     let num_windows = if total <= SEG_WINDOW_SAMPLES {
         1
