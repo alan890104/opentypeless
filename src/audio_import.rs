@@ -251,36 +251,8 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         serde_json::json!({ "id": note_id, "note": note }),
     );
 
-    // ── Step 4.5: Initialize diarization engine ──
-    let mut diarization: Option<crate::diarization::DiarizationEngine> = None;
-    if diarization_enabled {
-        let emb_path = settings::diarization_model_path();
-        let seg_path = settings::segmentation_model_path();
-        if emb_path.exists() {
-            let seg_opt = if seg_path.exists() { Some(seg_path.as_path()) } else { None };
-            match crate::diarization::DiarizationEngine::new(&emb_path, seg_opt) {
-                Ok(engine) => {
-                    tracing::info!("[import] diarization engine loaded");
-                    diarization = Some(engine);
-                }
-                Err(e) => {
-                    tracing::warn!("[import] failed to load diarization engine: {e}");
-                }
-            }
-        } else {
-            tracing::warn!(
-                "[import] diarization enabled but model not found at {}",
-                emb_path.display()
-            );
-        }
-    }
-
     // ── Step 5: Build transcribe closure ──
-    // Returns (text, word_timestamps).  Word timestamps are only populated for
-    // Whisper local — they enable precise text-to-sub-segment assignment when
-    // diarization is active.  Other engines return an empty word vec.
-    // The closure receives the raw (unfiltered) chunk so that DTW timestamps
-    // align with diarization sub-segment boundaries (both use the same audio).
+    // Returns (text, word_timestamps).
     let mut transcribe: Box<
         dyn FnMut(&[f32], f64, &str) -> (String, Vec<meeting_notes::WordTs>) + Send,
     > = match stt_config.mode {
@@ -348,147 +320,170 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         }
     };
 
-    // ── Step 6: Chunk and transcribe ──
-    let chunk_size = 30 * 16_000; // 30 seconds per chunk
-
-    for chunk_start in (0..total_samples).step_by(chunk_size) {
-        if state.import_cancelled.load(Ordering::SeqCst) {
-            tracing::info!("[import] cancelled by user");
-            let _ = meeting_notes::delete_note(&history_dir, &note_id);
-            let _ = app.emit(
-                "meeting-note-finalized",
-                serde_json::json!({ "id": note_id }),
-            );
-            return Err("cancelled".to_string());
-        }
-
-        let chunk_end = (chunk_start + chunk_size).min(total_samples);
-        let chunk = &samples_16k[chunk_start..chunk_end];
-        let start_secs = chunk_start as f64 / 16_000.0;
-        let end_secs = chunk_end as f64 / 16_000.0;
-
-        // Read previous context from WAL for STT prompt biasing.
-        let prev_text = {
-            let full = meeting_notes::read_wal(&history_dir, &note_id);
-            meeting_notes::wal_text_for_context(&full, 200)
-        };
-
-        // Pass the raw (unfiltered) chunk to transcription so that DTW word
-        // timestamps are in the same time-space as diarization sub-segments.
-        // If the chunk is pure silence, both STT and diarization skip it gracefully.
-        let (seg_text, words) = if chunk.is_empty() {
-            (String::new(), vec![])
+    // ── Step 4.5 + 6: Diarize then transcribe (or chunk-transcribe without diarization) ──
+    //
+    // When diarization is enabled we run pyannote_diarize on the entire file first
+    // (same algorithm as the integration tests), then transcribe each speaker segment
+    // individually.  This is strictly better than the old per-chunk online approach
+    // because agglomerative clustering has global context over all speakers.
+    //
+    // When diarization is disabled (or models are missing) we fall back to 30 s
+    // chunks with no speaker labels.
+    let mut diarization_engine: Option<crate::diarization::DiarizationEngine> = None;
+    if diarization_enabled {
+        let emb_path = settings::diarization_model_path();
+        let seg_path = settings::segmentation_model_path();
+        if emb_path.exists() && seg_path.exists() {
+            match crate::diarization::DiarizationEngine::new(&emb_path, Some(&seg_path)) {
+                Ok(engine) => {
+                    tracing::info!("[import] diarization engine loaded");
+                    diarization_engine = Some(engine);
+                }
+                Err(e) => tracing::warn!("[import] failed to load diarization engine: {e}"),
+            }
         } else {
-            transcribe(chunk, start_secs, &prev_text)
-        };
+            tracing::warn!(
+                "[import] diarization enabled but models not found (emb={}, seg={})",
+                emb_path.display(),
+                seg_path.display()
+            );
+        }
+    }
 
-        if !seg_text.is_empty() {
-            // Get diarization sub-segments (empty vec when diarization is off or
-            // the model found no speech in this chunk).
-            let sub_segs: Vec<(f64, f64, String)> = diarization
-                .as_mut()
-                .map(|e| e.process_vad_chunk(chunk, start_secs))
-                .unwrap_or_default();
+    // Try full-file pyannote diarization.  Falls back to empty vec (→ chunk path) on failure.
+    let diar_segs: Vec<(f64, f64, String)> = diarization_engine
+        .as_mut()
+        .map(|e| {
+            let _ = app.emit(
+                "import-progress",
+                serde_json::json!({ "status": "diarizing", "progress": 0.0 }),
+            );
+            let segs = e.diarize_full(&samples_16k);
+            tracing::info!(
+                "[import] pyannote_diarize: {} segments, {} speakers",
+                segs.len(),
+                segs.iter()
+                    .map(|(_, _, s)| s.as_str())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            );
+            segs
+        })
+        .unwrap_or_default();
 
-            if sub_segs.is_empty() {
-                // No sub-segments: single WAL entry with empty speaker.
+    if !diar_segs.is_empty() {
+        // ── Diarization path: transcribe each speaker segment ──
+        let n = diar_segs.len();
+        for (i, (start_s, end_s, speaker)) in diar_segs.iter().enumerate() {
+            if state.import_cancelled.load(Ordering::SeqCst) {
+                tracing::info!("[import] cancelled by user");
+                let _ = meeting_notes::delete_note(&history_dir, &note_id);
+                let _ = app.emit("meeting-note-finalized", serde_json::json!({ "id": note_id }));
+                return Err("cancelled".to_string());
+            }
+
+            let start_i = (start_s * 16_000.0) as usize;
+            let end_i = ((end_s * 16_000.0) as usize).min(total_samples);
+            if end_i <= start_i {
+                continue;
+            }
+            let chunk = &samples_16k[start_i..end_i];
+
+            let prev_text = {
+                let full = meeting_notes::read_wal(&history_dir, &note_id);
+                meeting_notes::wal_text_for_context(&full, 200)
+            };
+
+            let (text, _) = transcribe(chunk, *start_s, &prev_text);
+            if !text.is_empty() {
+                let seg = meeting_notes::WalSegment {
+                    speaker: speaker.clone(),
+                    start: *start_s,
+                    end: *end_s,
+                    text: text.clone(),
+                    words: vec![],
+                };
+                meeting_notes::append_wal(&history_dir, &note_id, &seg);
+                let _ = app.emit(
+                    "meeting-note-updated",
+                    serde_json::json!({
+                        "id": note_id,
+                        "delta": text,
+                        "speaker": speaker,
+                        "duration_secs": duration_secs,
+                    }),
+                );
+            }
+
+            let _ = app.emit(
+                "import-progress",
+                serde_json::json!({
+                    "id": note_id,
+                    "progress": (i + 1) as f64 / n as f64,
+                    "status": "transcribing",
+                }),
+            );
+        }
+    } else {
+        // ── No-diarization path: 30 s chunks, no speaker labels ──
+        let chunk_size = 30 * 16_000;
+        for chunk_start in (0..total_samples).step_by(chunk_size) {
+            if state.import_cancelled.load(Ordering::SeqCst) {
+                tracing::info!("[import] cancelled by user");
+                let _ = meeting_notes::delete_note(&history_dir, &note_id);
+                let _ = app.emit("meeting-note-finalized", serde_json::json!({ "id": note_id }));
+                return Err("cancelled".to_string());
+            }
+
+            let chunk_end = (chunk_start + chunk_size).min(total_samples);
+            let chunk = &samples_16k[chunk_start..chunk_end];
+            let start_secs = chunk_start as f64 / 16_000.0;
+            let end_secs = chunk_end as f64 / 16_000.0;
+
+            let prev_text = {
+                let full = meeting_notes::read_wal(&history_dir, &note_id);
+                meeting_notes::wal_text_for_context(&full, 200)
+            };
+
+            let (text, _) = if chunk.is_empty() {
+                (String::new(), vec![])
+            } else {
+                transcribe(chunk, start_secs, &prev_text)
+            };
+
+            if !text.is_empty() {
                 let seg = meeting_notes::WalSegment {
                     speaker: String::new(),
                     start: start_secs,
                     end: end_secs,
-                    text: seg_text.clone(),
+                    text: text.clone(),
                     words: vec![],
                 };
                 meeting_notes::append_wal(&history_dir, &note_id, &seg);
-            } else {
-                // Assign words to sub-segments by DTW timestamp.
-                // Falls back to longest-sub-segment when no words are available
-                // (Qwen3Asr / Cloud engines that return empty word vec).
-                let mut seg_texts: Vec<String> = vec![String::new(); sub_segs.len()];
-                if words.is_empty() {
-                    let longest_idx = sub_segs
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| {
-                            (a.1 - a.0)
-                                .partial_cmp(&(b.1 - b.0))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    seg_texts[longest_idx] = seg_text.clone();
-                } else {
-                    for word in &words {
-                        let idx = sub_segs
-                            .iter()
-                            .position(|(s, e, _)| word.s >= *s && word.s < *e)
-                            .unwrap_or(sub_segs.len() - 1);
-                        seg_texts[idx].push_str(&word.w);
-                    }
-                    for t in &mut seg_texts {
-                        *t = t.trim().to_string();
-                    }
-                }
-
-                for ((s, e, spk), text) in sub_segs.iter().zip(seg_texts.into_iter()) {
-                    let seg = meeting_notes::WalSegment {
-                        speaker: spk.clone(),
-                        start: *s,
-                        end: *e,
-                        text,
-                        words: vec![],
-                    };
-                    meeting_notes::append_wal(&history_dir, &note_id, &seg);
-                }
+                let _ = app.emit(
+                    "meeting-note-updated",
+                    serde_json::json!({
+                        "id": note_id,
+                        "delta": text,
+                        "speaker": "",
+                        "duration_secs": duration_secs,
+                    }),
+                );
             }
-            let primary_speaker = sub_segs
-                .first()
-                .map(|(_, _, s)| s.as_str())
-                .unwrap_or("")
-                .to_string();
+
             let _ = app.emit(
-                "meeting-note-updated",
+                "import-progress",
                 serde_json::json!({
                     "id": note_id,
-                    "delta": seg_text,
-                    "speaker": primary_speaker,
-                    "duration_secs": duration_secs,
+                    "progress": chunk_end as f64 / total_samples as f64,
+                    "status": "transcribing",
                 }),
             );
         }
-
-        let progress = chunk_end as f64 / total_samples as f64;
-        let _ = app.emit(
-            "import-progress",
-            serde_json::json!({
-                "id": note_id,
-                "progress": progress,
-                "status": "transcribing",
-            }),
-        );
     }
 
-    // ── Step 6.5: Agglomerative speaker label finalization ──
-    // Returns the updated WAL content so Step 7 can reuse it without a second disk read.
-    let agglomerative_wal: Option<String> = diarization.as_mut().and_then(|engine| {
-        let labels = engine.finalize_labels();
-        if labels.is_empty() {
-            return None;
-        }
-        let wal = meeting_notes::read_wal(&history_dir, &note_id);
-        let updated = meeting_notes::update_wal_speakers(&wal, &labels);
-        meeting_notes::write_wal(&history_dir, &note_id, &updated);
-        tracing::info!(
-            "[import] agglomerative relabeling complete: {} sub-segments",
-            labels.len()
-        );
-        Some(updated)
-    });
-
     // ── Step 7: Finalize ──
-    // Reuse the in-memory WAL if agglomerative relabeling ran; otherwise read from disk.
-    let transcript = agglomerative_wal
-        .unwrap_or_else(|| meeting_notes::read_wal(&history_dir, &note_id));
+    let transcript = meeting_notes::read_wal(&history_dir, &note_id);
     meeting_notes::finalize_note(&history_dir, &note_id, &transcript, duration_secs)
         .map_err(|e| format!("Failed to finalize note: {e}"))?;
     meeting_notes::remove_wal(&history_dir, &note_id);

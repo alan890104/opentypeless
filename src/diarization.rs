@@ -1000,6 +1000,29 @@ impl DiarizationEngine {
         })
     }
 
+    /// Run the full offline pyannote pipeline on a complete audio file.
+    ///
+    /// Requires the segmentation model to be loaded; returns empty vec otherwise.
+    /// Use this for audio import where the entire file is available — it produces
+    /// significantly better diarization than the online `process_vad_chunk` path
+    /// because it uses global centroid-linkage agglomerative clustering over all
+    /// windows at once rather than greedy per-chunk assignment.
+    ///
+    /// Returns `Vec<(start_secs, end_secs, speaker_label)>` sorted by start time.
+    pub(crate) fn diarize_full(&mut self, samples: &[f32]) -> Vec<(f64, f64, String)> {
+        let seg = match self.segmentation.as_mut() {
+            Some(s) => s,
+            None => {
+                tracing::warn!(
+                    "[diarization] diarize_full requires segmentation model; \
+                     returning empty"
+                );
+                return vec![];
+            }
+        };
+        pyannote_diarize(samples, seg, &mut self.emb_extractor)
+    }
+
     /// Process one VAD chunk of 16 kHz f32 audio.
     ///
     /// 1. If segmentation model available: split at silence AND speaker-class
