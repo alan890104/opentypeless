@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 use crate::polisher;
 use crate::stt::SttConfig;
@@ -39,6 +40,11 @@ pub struct Settings {
     /// the transcript.  Defaults to false (opt-in, privacy-sensitive feature).
     #[serde(default)]
     pub record_meeting_audio: bool,
+    /// Custom root directory for all mutable data (models, history, audio).
+    /// `None` means the default `~/.sumi/` location.
+    /// `config/` always stays at `~/.sumi/config/` so the app can find this setting on next launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_root: Option<PathBuf>,
 }
 
 fn default_idle_mic_timeout_secs() -> u32 {
@@ -73,6 +79,7 @@ impl Default for Settings {
             meeting_hotkey,
             idle_mic_timeout_secs: default_idle_mic_timeout_secs(),
             record_meeting_audio: false,
+            data_root: None,
         }
     }
 }
@@ -83,6 +90,9 @@ pub const fn is_debug() -> bool {
     cfg!(debug_assertions)
 }
 
+/// The fixed base directory that always holds `config/` and `logs/`.
+/// Never changes at runtime — `settings.json` must live at a known location
+/// so the app can read `data_root` on next launch.
 pub fn base_dir() -> PathBuf {
     let dir_name = if is_debug() { ".sumi-dev" } else { ".sumi" };
     dirs::home_dir()
@@ -93,22 +103,52 @@ pub fn base_dir() -> PathBuf {
         .join(dir_name)
 }
 
+// ── Runtime data-root override ─────────────────────────────────────────────
+
+static DATA_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+fn data_root_lock() -> &'static RwLock<Option<PathBuf>> {
+    DATA_ROOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Override the runtime data root.  Called once after `load_settings()` and
+/// again after a successful `migrate_data_root`.
+pub fn set_data_root(path: Option<PathBuf>) {
+    if let Ok(mut guard) = data_root_lock().write() {
+        *guard = path;
+    }
+}
+
+/// Root for all mutable data (models, history, audio).
+/// Returns the user-configured `data_root` if set, otherwise `base_dir()`.
+pub fn data_dir() -> PathBuf {
+    data_root_lock()
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(base_dir)
+}
+
+// ── Sub-directories ────────────────────────────────────────────────────────
+
 pub fn config_dir() -> PathBuf {
     base_dir().join("config")
 }
 
 pub fn models_dir() -> PathBuf {
-    base_dir().join("models")
+    data_dir().join("models")
 }
 
 pub fn history_dir() -> PathBuf {
-    base_dir().join("history")
+    data_dir().join("history")
 }
 
 pub fn audio_dir() -> PathBuf {
-    base_dir().join("audio")
+    data_dir().join("audio")
 }
 
+/// Logs always live under `base_dir()` (opened at startup before settings
+/// are loaded, so `data_root` is not yet known).
 pub fn logs_dir() -> PathBuf {
     base_dir().join("logs")
 }
@@ -143,6 +183,8 @@ pub fn load_settings() -> Settings {
         settings.polish.model = polisher::recommend_polish_model(settings.language.as_deref());
         save_settings_to_disk(&settings);
     }
+    // Apply the persisted data_root so all subsequent path helpers use it.
+    set_data_root(settings.data_root.clone());
     settings
 }
 

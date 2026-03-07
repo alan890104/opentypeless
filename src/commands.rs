@@ -14,6 +14,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(unix)]
+use libc;
 
 /// Load an API key, checking the in-memory cache first before falling back
 /// to the credential store.
@@ -448,7 +450,7 @@ pub async fn clear_all_history() -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_history_storage_path() -> String {
-    settings::base_dir().to_string_lossy().to_string()
+    settings::data_dir().to_string_lossy().to_string()
 }
 
 #[tauri::command]
@@ -2792,6 +2794,209 @@ pub fn cancel_import(state: State<'_, AppState>) {
     state
         .import_cancelled
         .store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// ── Data root migration ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DataRootCheckResult {
+    pub has_enough_space: bool,
+    pub already_has_data: bool,
+    pub free_bytes: u64,
+    pub data_size_bytes: u64,
+}
+
+/// Returns the total size (bytes) of all regular files under `dir`.
+fn dir_size(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().fold(0u64, |acc, entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            acc + dir_size(&path)
+        } else {
+            acc + std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        }
+    })
+}
+
+/// Available bytes on the volume that contains `path` (Unix only).
+#[cfg(unix)]
+fn free_space(path: &std::path::Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cstr) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(cstr.as_ptr(), &mut stat) } == 0 {
+        (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64)
+    } else {
+        0
+    }
+}
+
+#[cfg(not(unix))]
+fn free_space(_path: &std::path::Path) -> u64 {
+    u64::MAX
+}
+
+/// Copy a directory tree from `src` to `dst`, creating `dst` if needed.
+/// Emits `data-root-migration-progress` events with running byte totals.
+fn copy_dir(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    app: &AppHandle,
+    bytes_done: &mut u64,
+    bytes_total: u64,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir(&src_path, &dst_path, app, bytes_done, bytes_total)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!("Failed to copy {}: {}", src_path.display(), e)
+            })?;
+            *bytes_done += std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+            let _ = app.emit(
+                "data-root-migration-progress",
+                serde_json::json!({
+                    "phase": "copying",
+                    "bytes_done": bytes_done,
+                    "bytes_total": bytes_total,
+                }),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Return info about a candidate data-root directory so the frontend can
+/// show the right confirmation dialog before starting migration.
+#[tauri::command]
+pub fn check_data_root_target(new_path: String) -> Result<DataRootCheckResult, String> {
+    let new_root = std::path::PathBuf::from(&new_path);
+    let data_size_bytes = dir_size(&settings::data_dir());
+    let available = free_space(if new_root.exists() { &new_root } else { new_root.parent().unwrap_or(&new_root) });
+    let already_has_data = new_root.join("models").exists()
+        || new_root.join("history").exists()
+        || new_root.join("audio").exists();
+    Ok(DataRootCheckResult {
+        has_enough_space: available > data_size_bytes.saturating_add(100 * 1024 * 1024),
+        already_has_data,
+        free_bytes: available,
+        data_size_bytes,
+    })
+}
+
+/// Return the current data root as an absolute path string, or `None` if the
+/// default `~/.sumi/` location is in use.
+#[tauri::command]
+pub fn get_data_root(state: State<'_, AppState>) -> Option<String> {
+    state
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .data_root
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Migrate (or just update) the data root.
+///
+/// `strategy`:
+/// - `"move"` — copy all data directories to `new_path`, update settings,
+///   then delete the originals.
+/// - `"change_only"` — only update settings; the user has already moved the
+///   files manually.
+/// - `"reset"` — revert to the default `~/.sumi/` location (new_path ignored).
+#[tauri::command]
+pub async fn migrate_data_root(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+    new_path: Option<String>,
+    strategy: String,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    if state.is_recording.load(Ordering::SeqCst) {
+        return Err("recording_active".to_string());
+    }
+    if state.meeting_active.load(Ordering::SeqCst) {
+        return Err("meeting_active".to_string());
+    }
+
+    // "reset" or no path → remove data_root override
+    if strategy == "reset" || new_path.is_none() {
+        let mut s = state.settings.lock().map_err(|e| e.to_string())?;
+        s.data_root = None;
+        settings::set_data_root(None);
+        settings::save_settings_to_disk(&s);
+        return Ok(());
+    }
+
+    let new_root = std::path::PathBuf::from(new_path.unwrap());
+    let old_root = settings::data_dir();
+
+    // "change_only" → just write the setting, no file copy
+    if strategy == "change_only" {
+        let mut s = state.settings.lock().map_err(|e| e.to_string())?;
+        s.data_root = Some(new_root.clone());
+        settings::set_data_root(Some(new_root));
+        settings::save_settings_to_disk(&s);
+        return Ok(());
+    }
+
+    // "move" → copy then delete
+    // Create target sub-directories
+    for sub in &["models", "history", "audio"] {
+        std::fs::create_dir_all(new_root.join(sub))
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let bytes_total = ["models", "history", "audio"]
+        .iter()
+        .map(|s| dir_size(&old_root.join(s)))
+        .sum::<u64>();
+
+    let _ = app.emit(
+        "data-root-migration-progress",
+        serde_json::json!({ "phase": "copying", "bytes_done": 0u64, "bytes_total": bytes_total }),
+    );
+
+    let mut bytes_done = 0u64;
+    for sub in &["models", "history", "audio"] {
+        let src = old_root.join(sub);
+        let dst = new_root.join(sub);
+        if src.exists() {
+            copy_dir(&src, &dst, &app, &mut bytes_done, bytes_total)?;
+        }
+    }
+
+    // Persist new setting before deleting originals (safe rollback point)
+    {
+        let mut s = state.settings.lock().map_err(|e| e.to_string())?;
+        s.data_root = Some(new_root.clone());
+        settings::set_data_root(Some(new_root.clone()));
+        settings::save_settings_to_disk(&s);
+    }
+
+    // Delete originals
+    for sub in &["models", "history", "audio"] {
+        let src = old_root.join(sub);
+        if src.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&src) {
+                tracing::warn!("Could not remove {}: {}", src.display(), e);
+            }
+        }
+    }
+
+    let _ = app.emit(
+        "data-root-migration-progress",
+        serde_json::json!({ "phase": "done", "bytes_done": bytes_total, "bytes_total": bytes_total }),
+    );
+    Ok(())
 }
 
 #[cfg(test)]

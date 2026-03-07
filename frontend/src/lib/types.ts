@@ -150,6 +150,20 @@ export interface Settings {
   meeting_hotkey: string | null;
   idle_mic_timeout_secs: number;
   record_meeting_audio: boolean;
+  data_root?: string | null;
+}
+
+export interface DataRootCheckResult {
+  has_enough_space: boolean;
+  already_has_data: boolean;
+  free_bytes: number;
+  data_size_bytes: number;
+}
+
+export interface DataRootMigrationProgress {
+  phase: 'copying' | 'done';
+  bytes_done: number;
+  bytes_total: number;
 }
 
 // ── History ──
