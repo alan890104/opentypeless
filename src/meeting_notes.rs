@@ -317,7 +317,7 @@ pub fn update_wal_speakers(wal: &str, labels: &[(f64, f64, String)]) -> String {
             if let Some((_, _, spk)) = matched {
                 seg.speaker = spk.clone();
             } else if !seg.speaker.is_empty() {
-                tracing::debug!(
+                tracing::warn!(
                     "[diarization] WAL segment [{:.3}–{:.3}s] not in agglomerative labels \
                      — keeping online label {:?}",
                     seg.start, seg.end, seg.speaker

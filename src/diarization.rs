@@ -262,7 +262,9 @@ pub(crate) fn agglomerative_cluster(embeddings: &[Vec<f32>], threshold: f32) -> 
             break;
         }
 
-        // O(N³) total: O(N²) pairwise distances × O(N) merges. Fine for N < ~200 segments.
+        // O(N³) total: O(N²) pairwise distances × O(N) merges.
+        // N is capped at MAX_AGGLOMERATIVE_SEGS (200) in process_vad_chunk, bounding
+        // the worst-case to ~200³/6 × 1.5 k flops ≈ 2 billion flops (~1 s on CPU).
         let mut min_dist = f32::MAX;
         let mut min_i = 0;
         let mut min_j = 1;
@@ -539,10 +541,10 @@ impl DiarizationEngine {
 
             // Online clustering.
             // Cap agglomerative buffer to avoid O(N³) blowup on very long meetings.
-            // At N=MAX_AGGLOMERATIVE_SEGS the final pass costs ~125 M float ops (~0.5 s).
+            // N=200 keeps the worst-case final pass to ~2 billion flops (~1 s on CPU).
             // Segments beyond the cap still get an online cluster label; they are simply
             // excluded from the agglomerative re-labeling pass at meeting end.
-            const MAX_AGGLOMERATIVE_SEGS: usize = 500;
+            const MAX_AGGLOMERATIVE_SEGS: usize = 200;
             let speaker_id = if is_reliable {
                 // Reliable segment: may create new cluster, updates centroid, buffered.
                 let id = self.clusters.assign(emb.clone());
