@@ -11,6 +11,8 @@
     renameMeetingNote,
     deleteMeetingNote,
     polishMeetingNote,
+    exportMeetingAudio,
+    deleteMeetingAudio,
     onMeetingNoteCreated,
     onMeetingNoteUpdated,
     onMeetingNoteFinalized,
@@ -43,6 +45,9 @@
   // Copy feedback
   let copied = $state(false);
   let copiedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Download audio feedback
+  let downloading = $state(false);
 
   // Split copy dropdown
   let copyMenuOpen = $state(false);
@@ -218,6 +223,36 @@
   function toggleCopyMenu(e: MouseEvent) {
     e.stopPropagation();
     copyMenuOpen = !copyMenuOpen;
+  }
+
+  async function handleDownloadAudio() {
+    if (!selectedNote?.audio_path || downloading) return;
+    downloading = true;
+    try {
+      await exportMeetingAudio(selectedNote.id);
+    } catch (e) {
+      console.error('Download failed:', e);
+    } finally {
+      downloading = false;
+    }
+  }
+
+  async function handleDeleteAudio() {
+    if (!selectedNote?.audio_path) return;
+    showConfirm(
+      t('meeting.deleteAudio'),
+      t('meeting.deleteAudioConfirm'),
+      t('meeting.deleteAudio'),
+      async () => {
+        try {
+          await deleteMeetingAudio(selectedNote!.id);
+          const n = notes.find((x) => x.id === selectedNote!.id);
+          if (n) n.audio_path = null;
+        } catch (e) {
+          console.error('Delete audio failed:', e);
+        }
+      },
+    );
   }
 
   // ── Polish ──
@@ -581,6 +616,30 @@
       </div>
 
       <div class="content-footer">
+        {#if selectedNote.audio_path && !selectedNote.is_recording}
+          <div class="audio-actions">
+            <button
+              class="download-audio-btn"
+              onclick={handleDownloadAudio}
+              disabled={downloading}
+              title={t('meeting.downloadAudio')}
+            >
+              {#if downloading}
+                <span class="spinner-inline"></span>
+              {:else}
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              {/if}
+              {t('meeting.downloadAudio')}
+            </button>
+            <button
+              class="delete-audio-btn"
+              onclick={handleDeleteAudio}
+              title={t('meeting.deleteAudio')}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        {/if}
         <div class="footer-meta">
           {#if importing && importingNoteId === selectedNote.id}
             <span class="meta-importing">
@@ -942,6 +1001,57 @@
     border-radius: 50%;
     background: #34c759;
     animation: dotPulse 1.8s ease-in-out infinite;
+  }
+
+  .audio-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .download-audio-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .download-audio-btn:hover:not(:disabled) {
+    background: var(--bg-active);
+    color: var(--text-primary);
+  }
+  .download-audio-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .delete-audio-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-hover);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .delete-audio-btn:hover {
+    background: rgba(255, 59, 48, 0.1);
+    color: #ff3b30;
+    border-color: rgba(255, 59, 48, 0.3);
   }
 
   .copy-btn-group {

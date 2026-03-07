@@ -48,6 +48,7 @@ let settings = $state<Settings>({
   mic_device: null,
   meeting_hotkey: null,
   idle_mic_timeout_secs: 0,
+  record_meeting_audio: false,
 });
 
 export function getSettings(): Settings {
@@ -234,6 +235,10 @@ export function setAutoPaste(v: boolean) {
 
 export function setIdleMicTimeout(secs: number) {
   settings.idle_mic_timeout_secs = secs;
+}
+
+export function setRecordMeetingAudio(v: boolean) {
+  settings.record_meeting_audio = v;
 }
 
 // ── Prompt rules ──

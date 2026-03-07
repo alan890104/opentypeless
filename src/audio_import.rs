@@ -243,6 +243,7 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
         is_recording: true, // Use WAL-based flow
         word_count: 0,
         summary: String::new(),
+        audio_path: None,
     };
 
     let history_dir = settings::history_dir();

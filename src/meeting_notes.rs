@@ -2,6 +2,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
+use hound;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingNote {
@@ -15,6 +16,8 @@ pub struct MeetingNote {
     pub is_recording: bool,
     pub word_count: u64,
     pub summary: String,
+    /// Absolute path to the archived WAV file, or None if audio was not recorded.
+    pub audio_path: Option<String>,
 }
 
 /// Run schema migrations. Called once at app startup.
@@ -41,6 +44,10 @@ pub fn init_db(history_dir: &Path) {
             // Migration: add summary column for existing databases.
             let _ = conn.execute_batch(
                 "ALTER TABLE meeting_notes ADD COLUMN summary TEXT NOT NULL DEFAULT '';",
+            );
+            // Migration: add audio_path column for existing databases.
+            let _ = conn.execute_batch(
+                "ALTER TABLE meeting_notes ADD COLUMN audio_path TEXT;",
             );
         }
         Err(e) => tracing::error!("Failed to open DB for meeting_notes init: {}", e),
@@ -80,7 +87,7 @@ pub fn get_note(history_dir: &Path, id: &str) -> Result<MeetingNote, String> {
     let conn = open_db(history_dir).map_err(|e| e.to_string())?;
     let mut note = conn
         .query_row(
-            "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary
+            "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary, audio_path
              FROM meeting_notes WHERE id = ?1",
             params![id],
             map_row,
@@ -103,7 +110,7 @@ pub fn list_notes(history_dir: &Path) -> Vec<MeetingNote> {
         }
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary
+        "SELECT id, title, transcript, created_at, updated_at, duration_secs, stt_model, is_recording, word_count, summary, audio_path
          FROM meeting_notes ORDER BY created_at DESC",
     ) {
         Ok(s) => s,
@@ -203,36 +210,54 @@ pub fn rename_note(history_dir: &Path, id: &str, title: &str) -> Result<(), Stri
 
 pub fn delete_note(history_dir: &Path, id: &str) -> Result<(), String> {
     let conn = open_db(history_dir).map_err(|e| e.to_string())?;
+    // Read audio_path before deleting the row so we can clean up the file.
+    let audio_path: Option<String> = conn
+        .query_row(
+            "SELECT audio_path FROM meeting_notes WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
     conn.execute("DELETE FROM meeting_notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    // Best-effort cleanup of the WAL file (may not exist for finalized notes).
+    // Best-effort cleanup of the transcript WAL (may not exist for finalized notes).
     remove_wal(history_dir, id);
+    // Best-effort cleanup of audio files.
+    if let Some(p) = audio_path {
+        let _ = std::fs::remove_file(&p);
+    }
+    let _ = std::fs::remove_file(audio_wal_path(history_dir, id));
     Ok(())
 }
 
 pub fn delete_all_notes(history_dir: &Path) -> Result<(), String> {
     let conn = open_db(history_dir).map_err(|e| e.to_string())?;
-    // Collect IDs before deleting so we can clean up WAL files.
+    // Collect IDs and audio_paths before deleting so we can clean up files.
     let mut stmt = conn
-        .prepare("SELECT id FROM meeting_notes")
+        .prepare("SELECT id, audio_path FROM meeting_notes")
         .map_err(|e| e.to_string())?;
-    let ids: Vec<String> = stmt
-        .query_map([], |row| row.get(0))
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
     conn.execute("DELETE FROM meeting_notes", [])
         .map_err(|e| e.to_string())?;
-    for id in &ids {
+    for (id, audio_path) in &rows {
         remove_wal(history_dir, id);
+        if let Some(p) = audio_path {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_file(audio_wal_path(history_dir, id));
     }
     Ok(())
 }
 
 /// On startup, recover notes stuck in is_recording=1 from a previous crash.
 /// Reads any WAL file to restore the transcript, then marks the note as finalized.
-pub fn recover_stuck_notes(history_dir: &Path) {
+/// Also finalizes any pending audio WAL into a WAV file.
+pub fn recover_stuck_notes(history_dir: &Path, audio_dir: &Path) {
     let conn = match open_db(history_dir) {
         Ok(c) => c,
         Err(e) => {
@@ -263,9 +288,11 @@ pub fn recover_stuck_notes(history_dir: &Path) {
         let wal = wal_path(history_dir, id);
         let transcript = std::fs::read_to_string(&wal).unwrap_or_default();
         let wc = transcript.unicode_words().count() as i64;
+        // Also finalize any pending audio WAL.
+        let audio_path = finalize_audio(history_dir, id, audio_dir);
         let _ = conn.execute(
-            "UPDATE meeting_notes SET transcript = ?1, updated_at = ?2, is_recording = 0, word_count = ?3 WHERE id = ?4",
-            params![transcript, now, wc, id],
+            "UPDATE meeting_notes SET transcript = ?1, updated_at = ?2, is_recording = 0, word_count = ?3, audio_path = ?4 WHERE id = ?5",
+            params![transcript, now, wc, audio_path, id],
         );
         let _ = std::fs::remove_file(&wal);
     }
@@ -283,7 +310,129 @@ fn map_row(row: &rusqlite::Row) -> Result<MeetingNote, rusqlite::Error> {
         is_recording: row.get::<_, i32>(7)? != 0,
         word_count: row.get::<_, i64>(8).unwrap_or(0) as u64,
         summary: row.get::<_, String>(9).unwrap_or_default(),
+        audio_path: row.get::<_, Option<String>>(10).unwrap_or(None),
     })
+}
+
+// ── Audio WAL file ────────────────────────────────────────────────────────────
+// When `record_meeting_audio` is enabled, raw f32 audio samples (16 kHz, mono,
+// little-endian) are appended here during recording.  On normal stop
+// `finalize_audio` converts this to a WAV file and removes the temp file.
+// On crash, `recover_stuck_notes` performs the same finalization on startup.
+
+fn audio_wal_path(history_dir: &Path, id: &str) -> PathBuf {
+    debug_assert!(
+        !id.contains('/') && !id.contains('\\') && !id.contains(".."),
+        "meeting note id must not contain path separators: {id}"
+    );
+    history_dir.join(format!("{}.audio_raw", id))
+}
+
+/// Append raw 16 kHz mono f32 samples to the audio WAL file.
+/// Called from the meeting feeder segmenter thread for each segment.
+pub fn append_audio_wal(history_dir: &Path, id: &str, samples: &[f32]) {
+    use std::io::Write;
+    let path = audio_wal_path(history_dir, id);
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            let bytes: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
+            if let Err(e) = f.write_all(&bytes) {
+                tracing::warn!("Failed to append meeting audio WAL: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to open meeting audio WAL for append: {}", e),
+    }
+}
+
+/// Convert the raw audio WAL into a 16-bit PCM WAV file stored in
+/// `audio_dir/meetings/{id}.wav`.  Deletes the raw temp file on success or
+/// failure.  Returns the WAV path as a String, or None if no audio WAL exists
+/// or conversion fails.
+pub fn finalize_audio(history_dir: &Path, id: &str, audio_dir: &Path) -> Option<String> {
+    let raw_path = audio_wal_path(history_dir, id);
+    if !raw_path.exists() {
+        return None;
+    }
+    let bytes = match std::fs::read(&raw_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Failed to read meeting audio WAL: {}", e);
+            let _ = std::fs::remove_file(&raw_path);
+            return None;
+        }
+    };
+    let samples: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    // Always remove the raw temp file, even if WAV writing fails.
+    let _ = std::fs::remove_file(&raw_path);
+    if samples.is_empty() {
+        return None;
+    }
+    let meetings_dir = audio_dir.join("meetings");
+    if std::fs::create_dir_all(&meetings_dir).is_err() {
+        return None;
+    }
+    let wav_path = meetings_dir.join(format!("{}.wav", id));
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let ok = match hound::WavWriter::create(&wav_path, spec) {
+        Ok(mut w) => {
+            let mut success = true;
+            for &s in &samples {
+                let val = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                if w.write_sample(val).is_err() {
+                    success = false;
+                    break;
+                }
+            }
+            success && w.finalize().is_ok()
+        }
+        Err(_) => false,
+    };
+    if ok {
+        Some(wav_path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+/// Delete only the audio file for a note, setting `audio_path = NULL` in SQLite.
+/// The transcript and summary are preserved.
+pub fn delete_audio_file(history_dir: &Path, id: &str) -> Result<(), String> {
+    let conn = open_db(history_dir).map_err(|e| e.to_string())?;
+    let audio_path: Option<String> = conn
+        .query_row(
+            "SELECT audio_path FROM meeting_notes WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
+    conn.execute(
+        "UPDATE meeting_notes SET audio_path = NULL WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(p) = audio_path {
+        let _ = std::fs::remove_file(&p);
+    }
+    Ok(())
+}
+
+/// Persist the finalized audio WAV path into the SQLite row.
+pub fn update_audio_path(history_dir: &Path, id: &str, path: &str) -> Result<(), String> {
+    let conn = open_db(history_dir).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE meeting_notes SET audio_path = ?1 WHERE id = ?2",
+        params![path, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn save_summary(
@@ -325,6 +474,7 @@ mod tests {
             is_recording: false,
             word_count: 0,
             summary: String::new(),
+            audio_path: None,
         }
     }
 
@@ -392,7 +542,7 @@ mod tests {
         create_note(p, &note).unwrap();
         append_wal(p, "stuck", "recovered text");
 
-        recover_stuck_notes(p);
+        recover_stuck_notes(p, p);
 
         let fetched = get_note(p, "stuck").unwrap();
         assert!(!fetched.is_recording);
@@ -410,7 +560,7 @@ mod tests {
         create_note(p, &note).unwrap();
         // No WAL file — crash happened before any STT output
 
-        recover_stuck_notes(p);
+        recover_stuck_notes(p, p);
 
         let fetched = get_note(p, "stuck2").unwrap();
         assert!(!fetched.is_recording);

@@ -288,6 +288,12 @@ export const deleteAllMeetingNotes = () =>
 export const getActiveMeetingNoteId = () =>
   invoke<string | null>('get_active_meeting_note_id');
 
+export const exportMeetingAudio = (id: string) =>
+  invoke<string>('export_meeting_audio', { id });
+
+export const deleteMeetingAudio = (id: string) =>
+  invoke<void>('delete_meeting_audio', { id });
+
 export const onMeetingNoteCreated = (
   cb: (p: { id: string; note: MeetingNote }) => void,
 ): Promise<UnlistenFn> =>

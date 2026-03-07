@@ -545,6 +545,7 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
     cloud_config: SttCloudConfig,
     language: String,
     session_id: u64,
+    record_audio: bool,
 ) {
     let mut cloud_config = cloud_config;
     cloud_config.language = language;
@@ -564,6 +565,6 @@ pub(crate) fn run_cloud_meeting_feeder_loop(
         });
     // Cap each segment at 120 s to bound per-segment cloud STT cost and keep
     // stop_meeting_mode well within the 5-min timeout even on slow networks.
-    crate::meeting_feeder::run_meeting_feeder(app, session_id, "cloud-meeting", Some(120 * 16_000), transcribe);
+    crate::meeting_feeder::run_meeting_feeder(app, session_id, "cloud-meeting", Some(120 * 16_000), transcribe, record_audio);
 }
 

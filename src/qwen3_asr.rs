@@ -320,7 +320,7 @@ pub(crate) fn run_feeder_loop(app: AppHandle, language: String, session_id: u64)
 ///
 /// Delegates to `meeting_feeder::run_meeting_feeder` with a Qwen3-ASR transcription
 /// closure.  Force-flushes segments at 120 s to bound per-segment inference cost.
-pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, session_id: u64) {
+pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, session_id: u64, record_audio: bool) {
     let state = app.state::<crate::AppState>();
 
     let model = {
@@ -350,6 +350,7 @@ pub(crate) fn run_meeting_feeder_loop(app: tauri::AppHandle, language: String, s
         "qwen3-meeting",
         Some(120 * 16_000),
         transcribe,
+        record_audio,
     );
 }
 

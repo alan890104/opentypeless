@@ -182,6 +182,8 @@ fn run_meeting_segmenter(
     label: &str,
     max_segment_samples: Option<usize>,
     tx: mpsc::Sender<Segment>,
+    record_audio: bool,
+    audio_note_id: &Option<String>,
 ) {
     let state = app.state::<crate::AppState>();
     let sr = state
@@ -289,6 +291,15 @@ fn run_meeting_segmenter(
                     chunk_buf.len() / 16_000
                 );
             }
+            if record_audio {
+                if let Some(ref id) = *audio_note_id {
+                    crate::meeting_notes::append_audio_wal(
+                        &crate::settings::history_dir(),
+                        id,
+                        &chunk_buf,
+                    );
+                }
+            }
             let chunk = std::mem::take(&mut chunk_buf);
             // If send fails (worker exited early due to session change), stop.
             if tx.send(Segment::Tick(chunk)).is_err() {
@@ -305,6 +316,15 @@ fn run_meeting_segmenter(
         "[{label}] segmenter: loop exited, sending Final segment ({} samples)",
         chunk_buf.len()
     );
+    if record_audio && !chunk_buf.is_empty() {
+        if let Some(ref id) = *audio_note_id {
+            crate::meeting_notes::append_audio_wal(
+                &crate::settings::history_dir(),
+                id,
+                &chunk_buf,
+            );
+        }
+    }
     let _ = tx.send(Segment::Final(chunk_buf));
     // Normal path: tx dropped here → channel closes → worker's for-loop exits.
     // Failure path: if the worker already exited early (session change or cancellation),
@@ -322,14 +342,25 @@ fn run_meeting_segmenter(
 /// `transcribe` receives VAD-filtered 16 kHz samples and the previous WAL
 /// context string (~200 chars).  It should return the transcribed text
 /// segment, or an empty string on failure / no speech.
+///
+/// `record_audio` — when true, each segment's raw samples are appended to an
+/// audio WAL file alongside the transcript WAL.  `stop_meeting_mode` converts
+/// this to a WAV file after the feeder exits.
 pub(crate) fn run_meeting_feeder(
     app: AppHandle,
     session_id: u64,
     label: &str,
     max_segment_samples: Option<usize>,
     transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send + 'static>,
+    record_audio: bool,
 ) {
     let (tx, rx) = mpsc::channel::<Segment>();
+
+    // Read note_id once so the segmenter and worker both see the same value.
+    let audio_note_id: Option<String> = {
+        let state = app.state::<crate::AppState>();
+        state.active_meeting_note_id.lock().ok().and_then(|n| n.clone())
+    };
 
     let label_owned = label.to_string();
     let worker_app = app.clone();
@@ -337,7 +368,7 @@ pub(crate) fn run_meeting_feeder(
         run_meeting_worker(worker_app, session_id, &label_owned, rx, transcribe);
     });
 
-    run_meeting_segmenter(&app, session_id, label, max_segment_samples, tx);
+    run_meeting_segmenter(&app, session_id, label, max_segment_samples, tx, record_audio, &audio_note_id);
     // tx dropped when run_meeting_segmenter returns → channel closes → worker exits.
 
     tracing::info!("[{label}] segmenter done, waiting for worker to finish");

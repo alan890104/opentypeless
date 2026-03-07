@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '$lib/stores/i18n.svelte';
-  import { getSettings, setAutoPaste, setIdleMicTimeout, save } from '$lib/stores/settings.svelte';
+  import { getSettings, setAutoPaste, setIdleMicTimeout, setRecordMeetingAudio, save } from '$lib/stores/settings.svelte';
   import SettingRow from '$lib/components/SettingRow.svelte';
   import SectionHeader from '$lib/components/SectionHeader.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
@@ -26,6 +26,11 @@
     setIdleMicTimeout(parseInt(value, 10));
     save();
   }
+
+  function onToggleRecordMeetingAudio(checked: boolean) {
+    setRecordMeetingAudio(checked);
+    save();
+  }
 </script>
 
 <div class="section">
@@ -49,6 +54,10 @@
       value={String(settings.idle_mic_timeout_secs)}
       onchange={onMicIdleChange}
     />
+  </SettingRow>
+
+  <SettingRow name={t('settings.behavior.recordMeetingAudio')} desc={t('settings.behavior.recordMeetingAudioDesc')}>
+    <Toggle checked={settings.record_meeting_audio} onchange={onToggleRecordMeetingAudio} />
   </SettingRow>
 </div>
 

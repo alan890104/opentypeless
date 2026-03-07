@@ -2578,6 +2578,41 @@ pub fn delete_all_meeting_notes() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn delete_meeting_audio(id: String) -> Result<(), String> {
+    meeting_notes::delete_audio_file(&settings::history_dir(), &id)
+}
+
+#[tauri::command]
+pub async fn export_meeting_audio(id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let note = meeting_notes::get_note(&settings::history_dir(), &id)?;
+        let src_str = note
+            .audio_path
+            .as_deref()
+            .ok_or_else(|| "No audio recorded for this meeting".to_string())?;
+        let src = std::path::Path::new(src_str);
+        if !src.exists() {
+            return Err("Audio file not found".to_string());
+        }
+        let downloads = dirs::download_dir().unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("Downloads")
+        });
+        let _ = std::fs::create_dir_all(&downloads);
+        let filename = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("meeting.wav");
+        let dest = downloads.join(filename);
+        std::fs::copy(src, &dest).map_err(|e| format!("Failed to copy audio: {}", e))?;
+        Ok(dest.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn get_active_meeting_note_id(state: State<'_, AppState>) -> Option<String> {
     state
         .active_meeting_note_id

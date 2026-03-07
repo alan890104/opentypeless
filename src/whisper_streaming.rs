@@ -332,7 +332,7 @@ pub(crate) fn transcribe_meeting_chunk<'a>(
 ///
 /// Delegates to `meeting_feeder::run_meeting_feeder` with a Whisper transcription
 /// closure that uses `initial_prompt` context from the WAL file.
-pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, session_id: u64) {
+pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, session_id: u64, record_audio: bool) {
     let app_for_closure = app.clone();
     let transcribe: Box<dyn FnMut(&[f32], &str) -> String + Send + 'static> =
         Box::new(move |samples, prev_text| {
@@ -348,5 +348,5 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
         });
     // Cap each segment at 120 s so the Final segment never exceeds ~12 s of
     // Whisper inference time, keeping stop_meeting_mode well within the 5-min timeout.
-    crate::meeting_feeder::run_meeting_feeder(app, session_id, "whisper-meeting", Some(120 * 16_000), transcribe);
+    crate::meeting_feeder::run_meeting_feeder(app, session_id, "whisper-meeting", Some(120 * 16_000), transcribe, record_audio);
 }
