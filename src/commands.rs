@@ -58,7 +58,6 @@ pub fn save_settings(
     current.stt.cloud.language = current.stt.language.clone();
     current.edit_hotkey = new_settings.edit_hotkey;
     current.meeting_hotkey = new_settings.meeting_hotkey;
-    current.meeting_diarization_enabled = new_settings.meeting_diarization_enabled;
     current.onboarding_completed = new_settings.onboarding_completed;
     current.idle_mic_timeout_secs = new_settings.idle_mic_timeout_secs;
     settings::save_settings_to_disk(&current);

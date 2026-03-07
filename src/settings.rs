@@ -35,10 +35,6 @@ pub struct Settings {
     /// to prevent CoreAudio DSP (echo cancellation, AGC) from affecting other apps.
     #[serde(default = "default_idle_mic_timeout_secs")]
     pub idle_mic_timeout_secs: u32,
-    /// Whether speaker diarization is enabled in meeting mode.
-    /// Requires the WeSpeaker ONNX model to be downloaded.
-    #[serde(default)]
-    pub meeting_diarization_enabled: bool,
 }
 
 fn default_idle_mic_timeout_secs() -> u32 {
@@ -72,7 +68,6 @@ impl Default for Settings {
             mic_device: None,
             meeting_hotkey,
             idle_mic_timeout_secs: default_idle_mic_timeout_secs(),
-            meeting_diarization_enabled: false,
         }
     }
 }

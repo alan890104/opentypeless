@@ -187,9 +187,9 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     }
 
     // ── Step 3: Determine STT engine ──
-    let (stt_config, diarization_enabled) = {
+    let stt_config = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.stt.clone(), s.meeting_diarization_enabled)
+        s.stt.clone()
     };
     let language = stt_config.language.clone();
 
@@ -330,24 +330,18 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
     // When diarization is disabled (or models are missing) we fall back to 30 s
     // chunks with no speaker labels.
     let mut diarization_engine: Option<crate::diarization::DiarizationEngine> = None;
-    if diarization_enabled {
-        let emb_path = settings::diarization_model_path();
-        let seg_path = settings::segmentation_model_path();
-        if emb_path.exists() && seg_path.exists() {
-            match crate::diarization::DiarizationEngine::new(&emb_path, Some(&seg_path)) {
-                Ok(engine) => {
-                    tracing::info!("[import] diarization engine loaded");
-                    diarization_engine = Some(engine);
-                }
-                Err(e) => tracing::warn!("[import] failed to load diarization engine: {e}"),
+    let emb_path = settings::diarization_model_path();
+    let seg_path = settings::segmentation_model_path();
+    if emb_path.exists() && seg_path.exists() {
+        match crate::diarization::DiarizationEngine::new(&emb_path, Some(&seg_path)) {
+            Ok(engine) => {
+                tracing::info!("[import] diarization engine loaded");
+                diarization_engine = Some(engine);
             }
-        } else {
-            tracing::warn!(
-                "[import] diarization enabled but models not found (emb={}, seg={})",
-                emb_path.display(),
-                seg_path.display()
-            );
+            Err(e) => tracing::warn!("[import] failed to load diarization engine: {e}"),
         }
+    } else {
+        tracing::info!("[import] diarization models not found, running without speaker labels");
     }
 
     // Try full-file pyannote diarization.  Falls back to empty vec (→ chunk path) on failure.

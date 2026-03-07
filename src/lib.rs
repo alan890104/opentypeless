@@ -142,7 +142,7 @@ pub struct AppState {
     /// Set to true to cancel a running audio file import.
     pub import_cancelled: AtomicBool,
     /// Optional speaker diarization engine (WeSpeaker ONNX).
-    /// Loaded lazily at first meeting start when `settings.meeting_diarization_enabled`.
+    /// Loaded at meeting start when diarization model files are present.
     pub diarization_ctx: Mutex<Option<diarization::DiarizationEngine>>,
 }
 
@@ -1857,17 +1857,12 @@ fn start_meeting_mode(app: &AppHandle) {
 
     // Load the speaker diarization engine *outside* the lock so model I/O
     // (2–5 s) does not block concurrent diarization_ctx readers.
-    let diarization_enabled = state.settings.lock()
-        .map(|s| s.meeting_diarization_enabled)
-        .unwrap_or(false);
-    let new_diar_engine: Option<diarization::DiarizationEngine> = if diarization_enabled {
+    // Load diarization engine if models are present; no explicit enable toggle.
+    let new_diar_engine: Option<diarization::DiarizationEngine> = {
         let model_path = settings::diarization_model_path();
-        if model_path.exists() {
-            let seg_path = settings::segmentation_model_path();
-            // Always recreate so that a newly-downloaded segmentation model
-            // is picked up even when an engine already exists from a prior session.
-            let seg_opt = if seg_path.exists() { Some(seg_path) } else { None };
-            match diarization::DiarizationEngine::new(&model_path, seg_opt.as_deref()) {
+        let seg_path = settings::segmentation_model_path();
+        if model_path.exists() && seg_path.exists() {
+            match diarization::DiarizationEngine::new(&model_path, Some(&seg_path)) {
                 Ok(engine) => Some(engine),
                 Err(e) => {
                     tracing::warn!("[diarization] failed to load model: {e}");
@@ -1875,11 +1870,9 @@ fn start_meeting_mode(app: &AppHandle) {
                 }
             }
         } else {
-            tracing::warn!("[diarization] model not found at {} — diarization disabled", model_path.display());
+            tracing::info!("[diarization] models not found, running meeting without speaker labels");
             None
         }
-    } else {
-        None // Diarization disabled — None clears any loaded engine and frees memory.
     };
     // Swap in atomically; lock held only for the pointer swap, not model I/O.
     *state.diarization_ctx.lock().unwrap_or_else(|e| e.into_inner()) = new_diar_engine;
