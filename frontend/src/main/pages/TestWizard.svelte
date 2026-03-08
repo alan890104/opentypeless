@@ -388,7 +388,7 @@
   function polishKeydown(e: KeyboardEvent) {
     e.preventDefault();
     const held = eventToHotkeyParts(e);
-    const parts = (editHotkey || hotkey).split('+');
+    const parts = hotkey.split('+');
     const newPressed = new Set(polishPressedKeys);
     parts.forEach((part) => {
       if (held.has(part)) newPressed.add(part);
@@ -551,6 +551,7 @@
   // Helper for instruction HTML with embedded keycaps
   let generalInstruction = $derived(t('test.step3.instruction', { hotkey: hotkeyKeycapsHtml(hotkey) }));
   let gmailInstruction = $derived(t('test.step4.instruction', { hotkey: hotkeyKeycapsHtml(hotkey) }));
+  let polishInstruction = $derived(t('test.step5.instruction', { hotkey: hotkeyKeycapsHtml(hotkey) }));
   let editInstruction = $derived(
     t('test.step6.instruction', { hotkey: hotkeyKeycapsHtml(editHotkey || hotkey) }),
   );
@@ -778,10 +779,12 @@
           <div class="test-title">{t('test.step5.title')}</div>
           <div class="test-subtitle">{t('test.step5.subtitle')}</div>
           {#if polishReady}
-            <div class="test-polish-status test-polish-ready">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#28c840" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-              <span>{t('test.step5.polishReady')}</span>
-            </div>
+            <InstructionCard
+              icon='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg>'
+            >
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              {@html polishInstruction}
+            </InstructionCard>
             <div class="test-left-spacer"></div>
             <div class="test-actions">
               <button class="test-btn-filled" onclick={() => goToStep(6)}>
@@ -803,7 +806,7 @@
         </div>
         <div class="test-right">
           <div class="test-keycap-lg">
-            {#each (editHotkey || hotkey).split('+') as part}
+            {#each hotkey.split('+') as part}
               {@const sym = MODIFIER_SYMBOLS[part]}
               {@const label = sym ?? part.replace(/^Key/, '').replace(/^Digit/, '')}
               <kbd class:accent={!sym} class:pressed={isPolishKeyPressed(part)}>{label}</kbd>
