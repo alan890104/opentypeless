@@ -96,10 +96,7 @@ pub const fn is_debug() -> bool {
 pub fn base_dir() -> PathBuf {
     let dir_name = if is_debug() { ".sumi-dev" } else { ".sumi" };
     dirs::home_dir()
-        .unwrap_or_else(|| {
-            tracing::warn!("Home directory not found, using /tmp as fallback");
-            PathBuf::from("/tmp")
-        })
+        .expect("Could not determine home directory (HOME env var not set?)")
         .join(dir_name)
 }
 
