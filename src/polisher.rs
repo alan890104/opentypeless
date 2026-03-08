@@ -1130,7 +1130,7 @@ fn run_cloud_inference(
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": raw_text }
         ],
-        "max_completion_tokens": max_tokens.unwrap_or(1024)
+        "max_completion_tokens": max_tokens.unwrap_or(8192)
     });
     // GPT-5 series does not support temperature; only set it for other models
     if !model_id.contains("gpt-5") {
@@ -1260,16 +1260,11 @@ fn run_llm_inference(
         .map_err(|e| format!("Sample: {}", e))?;
 
     // Generation loop
-    let max_tokens: usize = max_tokens.unwrap_or(512);
+    let max_tokens: usize = max_tokens.unwrap_or(8192);
     let gen_start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(15);
     let mut output_token_ids: Vec<u32> = Vec::new();
 
     for i in 0..max_tokens {
-        if gen_start.elapsed() > timeout {
-            tracing::warn!("Polish inference timeout (15s)");
-            break;
-        }
         if next_token == eos_token_id {
             break;
         }
