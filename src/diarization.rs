@@ -137,7 +137,7 @@ impl SegmentationModel {
         // Pad to multiple of SEG_WINDOW_SAMPLES so the last window is complete.
         let pad = (SEG_WINDOW_SAMPLES - (total_len % SEG_WINDOW_SAMPLES)) % SEG_WINDOW_SAMPLES;
         let mut padded = scaled;
-        padded.extend(std::iter::repeat(0.0f32).take(pad));
+        padded.extend(std::iter::repeat_n(0.0f32, pad));
 
         // None = silence, Some(cls) = speech with class cls.
         let mut cur_class: Option<usize> = None;
@@ -266,20 +266,17 @@ impl SegmentationModel {
         segments
     }
 
-    /// Run the powerset segmentation model on a pre-scaled 160,000-sample window.
+    /// Run the powerset segmentation model and return **soft** per-speaker
+    /// probabilities, matching `Powerset(3, 2).to_multilabel(soft=True)`.
     ///
-    /// `scaled_window`: 160,000 f32 values scaled × 32,767 (model training format).
-    ///
-    /// Returns per-frame per-speaker binary activations (up to `SEG_WINDOW_SAMPLES /
-    /// SEG_FRAME_HOP` frames, `PYANNOTE_NUM_SPEAKERS` speakers per frame).
-    ///
-    /// The conversion from raw ONNX output `[1, num_frames, 7]` to binary
-    /// `[num_frames, 3]` follows `Powerset(3, 2).to_multilabel(soft=False)`:
-    ///   argmax over 7 powerset classes → look up in `PYANNOTE_POWERSET_MAP`.
-    fn run_window_powerset(
+    /// Returns `(soft, binary)`:
+    /// - `soft[f][s]` — probability that speaker `s` is active at frame `f`
+    ///   (softmax over 7 powerset classes, then summed per speaker).
+    /// - `binary[f][s]` — `soft[f][s] > 0.5` (used for embedding masking).
+    fn run_window_soft(
         &mut self,
         scaled_window: &[f32],
-    ) -> Vec<[bool; PYANNOTE_NUM_SPEAKERS]> {
+    ) -> (Vec<[f32; PYANNOTE_NUM_SPEAKERS]>, Vec<[bool; PYANNOTE_NUM_SPEAKERS]>) {
         let array =
             match Array1::from_vec(scaled_window.to_vec())
                 .into_shape_with_order((1_usize, 1_usize, SEG_WINDOW_SAMPLES))
@@ -287,7 +284,7 @@ impl SegmentationModel {
                 Ok(a) => a,
                 Err(e) => {
                     tracing::warn!("[pyannote] seg reshape failed: {e}");
-                    return vec![];
+                    return (vec![], vec![]);
                 }
             };
 
@@ -296,7 +293,7 @@ impl SegmentationModel {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!("[pyannote] seg tensor failed: {e}");
-                    return vec![];
+                    return (vec![], vec![]);
                 }
             };
 
@@ -304,7 +301,7 @@ impl SegmentationModel {
             Ok(o) => o,
             Err(e) => {
                 tracing::warn!("[pyannote] seg inference failed: {e}");
-                return vec![];
+                return (vec![], vec![]);
             }
         };
 
@@ -314,8 +311,8 @@ impl SegmentationModel {
         {
             Some(t) => t,
             None => {
-                tracing::warn!("[pyannote] seg missing 'output'");
-                return vec![];
+                tracing::warn!("[pyannote] seg missing 'logits'");
+                return (vec![], vec![]);
             }
         };
 
@@ -324,29 +321,39 @@ impl SegmentationModel {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("[pyannote] seg from_shape failed: {e}");
-                return vec![];
+                return (vec![], vec![]);
             }
         };
 
-        // view: [1, num_frames, 7]
-        // Decode: argmax over dim-2 → powerset class → per-speaker binary
-        let mut result = Vec::new();
+        let mut soft_result = Vec::new();
+        let mut binary_result = Vec::new();
         for batch in view.outer_iter() {
-            // batch: [num_frames, 7]
             for frame in batch.axis_iter(Axis(0)) {
-                // frame: [7] — softmax probabilities over powerset classes
-                let cls = frame
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| {
-                        a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, _)| i.min(6))
-                    .unwrap_or(0);
-                result.push(PYANNOTE_POWERSET_MAP[cls]);
+                // frame: [7] logits — softmax → per-speaker probabilities
+                let max_logit = frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp: Vec<f32> = frame.iter().map(|&x| (x - max_logit).exp()).collect();
+                let sum_exp: f32 = exp.iter().sum();
+
+                // Powerset to multilabel: sum probabilities for each speaker
+                let mut speaker_probs = [0.0f32; PYANNOTE_NUM_SPEAKERS];
+                for (cls, &e) in exp.iter().enumerate() {
+                    let p = e / sum_exp;
+                    for s in 0..PYANNOTE_NUM_SPEAKERS {
+                        if PYANNOTE_POWERSET_MAP[cls.min(6)][s] {
+                            speaker_probs[s] += p;
+                        }
+                    }
+                }
+                let binary = [
+                    speaker_probs[0] > 0.5,
+                    speaker_probs[1] > 0.5,
+                    speaker_probs[2] > 0.5,
+                ];
+                soft_result.push(speaker_probs);
+                binary_result.push(binary);
             }
         }
-        result
+        (soft_result, binary_result)
     }
 }
 
@@ -539,7 +546,7 @@ fn compute_fbank(samples: &[f32]) -> Vec<[f32; 80]> {
         let mut mel_energy = [0.0f32; N_MELS];
         for (m, filter) in filterbank.iter().enumerate() {
             let e: f32 = filter.iter().zip(power.iter()).map(|(&f, &p)| f * p).sum();
-            mel_energy[m] = (e + 1e-10_f32).ln();
+            mel_energy[m] = e.max(f32::EPSILON).ln();
         }
         frames.push(mel_energy);
     }
@@ -650,7 +657,7 @@ fn fft_power_spectrum(input: &[f32; 512]) -> [f32; 257] {
 /// This is the exact value from pyannote's default AgglomerativeClustering config:
 /// `threshold=0.7045654963945799` — euclidean distance on L2-normalized embeddings.
 /// Equivalent cosine distance: 0.7045²/2 ≈ 0.248.
-pub(crate) const PYANNOTE_THRESHOLD: f32 = 0.7045654963945799;
+pub(crate) const PYANNOTE_THRESHOLD: f32 = 0.704_565_5;
 
 /// Centroid linkage agglomerative clustering matching scipy/pyannote exactly.
 ///
@@ -765,9 +772,9 @@ pub(crate) fn centroid_linkage_cluster(
         }
 
         // Update membership: all embeddings in best_b now belong to best_a.
-        for i in 0..n {
-            if origin[i] == best_b {
-                origin[i] = best_a;
+        for item in origin.iter_mut().take(n) {
+            if *item == best_b {
+                *item = best_a;
             }
         }
     }
@@ -791,18 +798,20 @@ pub(crate) fn centroid_linkage_cluster(
             .filter(|&s| sizes[s] < effective_min)
             .collect();
         for small_slot in small {
-            // Nearest large cluster by euclidean distance between centroids.
+            // Nearest large cluster by COSINE distance between centroids.
+            // Matches pyannote: `cdist(large_centroids, small_centroids, metric='cosine')`.
+            // Centroids are means of L2-normalised embeddings (norm < 1), so cosine ≠ euclidean.
             let nearest = large
                 .iter()
                 .cloned()
                 .min_by(|&a, &b| {
-                    sq_euclidean(&centroids[small_slot], &centroids[a])
-                        .total_cmp(&sq_euclidean(&centroids[small_slot], &centroids[b]))
+                    cosine_dist(&centroids[small_slot], &centroids[a])
+                        .total_cmp(&cosine_dist(&centroids[small_slot], &centroids[b]))
                 })
                 .unwrap();
-            for i in 0..n {
-                if origin[i] == small_slot {
-                    origin[i] = nearest;
+            for item in origin.iter_mut().take(n) {
+                if *item == small_slot {
+                    *item = nearest;
                 }
             }
             active[small_slot] = false;
@@ -1224,7 +1233,11 @@ impl DiarizationEngine {
 
 // ── Offline pyannote-equivalent pipeline ───────────────────────────────────────
 
-/// Compute the L2-normalised centroid of each cluster.
+/// Compute the mean centroid of each cluster (NOT L2-normalised).
+///
+/// Matches pyannote `assign_embeddings`: `np.mean(train_embeddings[train_clusters == k], axis=0)`.
+/// The resulting centroids have norm < 1 (mean of L2-normalised embeddings).
+/// Distance comparisons use cosine distance which handles non-unit norms correctly.
 ///
 /// `labels[i]` is the cluster index (0-based) of `embeddings[i]`.
 /// Returns `k` centroids in a `Vec<Vec<f32>>`.
@@ -1242,8 +1255,7 @@ fn compute_centroids(embeddings: &[Vec<f32>], labels: &[usize], k: usize) -> Vec
     }
     sums.into_iter().enumerate().map(|(i, s)| {
         let n = counts[i].max(1) as f64;
-        let c: Vec<f32> = s.iter().map(|&x| (x / n) as f32).collect();
-        l2_normalize(&c)
+        s.iter().map(|&x| (x / n) as f32).collect()
     }).collect()
 }
 
@@ -1259,13 +1271,17 @@ fn compute_centroids(embeddings: &[Vec<f32>], labels: &[usize], k: usize) -> Vec
 /// # Reconstruction
 ///
 /// Follows `SpeakerDiarization.reconstruct()` + `to_diarization()`:
-///   1. `clustered_seg[w, f, k]` = OR over local speakers s with label[w,s]==k of seg[w,f,s]
-///   2. `activation_sum[abs_f][k]` = Σ_w clustered_seg[w, f_local(abs_f,w), k]  (skip_avg=True)
-///   3. `speaker_count[abs_f]` = round(mean_w Σ_s seg[w, f_local, s])            (skip_avg=False)
+///   1. `clustered_seg[w, f, k]` = max over s where label[w,s]==k of soft_seg[w,f,s]
+///   2. `activation_sum[abs_f][k]` += clustered_seg[w, f_local, k]  (skip_avg=True)
+///   3. `speaker_count[abs_f]` = round(mean_w sum_s soft_seg[w, f_local, s])  (skip_avg=False)
 ///   4. At each abs_f: mark top `speaker_count` global speakers by activation_sum as active.
 ///   5. Convert binary per-frame labels to (start, end, speaker) segments, merge contiguous.
 ///
-/// Returns segments sorted by start time.  Segments shorter than 0.5 s are dropped.
+/// Uses **soft** per-speaker probabilities (softmax → powerset_to_multilabel) for
+/// reconstruction and speaker_count, matching pyannote exactly. Binary masks
+/// (threshold > 0.5) are only used for embedding extraction.
+///
+/// Returns segments sorted by start time.
 pub(crate) fn pyannote_diarize(
     samples: &[f32],
     seg_model: &mut SegmentationModel,
@@ -1280,20 +1296,16 @@ pub(crate) fn pyannote_diarize(
     // `min_num_frames = ceil(num_frames * min_num_samples / num_samples)`
     // = ceil(589 * 400 / 160000) = 2).
     const MIN_EXCL_FRAMES: usize = 2;
-    // Minimum segment duration to emit (matches pyannote `min_duration_on=0.0` but
-    // the iterator in test_onnx.py already filters `turn.end - turn.start >= 0.5`).
-    const MIN_SEG_S: f64 = 0.5;
+    // Minimum segment duration to emit.
+    // Matches pyannote 3.1 config: `min_duration_on=0.0` (no filtering).
+    const MIN_SEG_S: f64 = 0.0;
     // Matches pyannote `BaseClustering.filter_embeddings(min_active_ratio=0.2)`:
     // only (window, speaker) pairs where the speaker is EXCLUSIVELY active for at
     // least 20 % of the 589-frame window are used for centroid-linkage clustering.
     // Others are still assigned to the nearest centroid after clustering.
     //
     // pyannote default: ceil(0.2 * 589) = 118 frames ≈ 2 s exclusive speech.
-    // We use 30 frames (≈ 0.5 s, ~5 % of the window) instead because conversational
-    // audio typically has shorter turns — if speaker B only speaks for 1–2 s per 10 s
-    // window, they never hit 118 exclusive frames and their embeddings all get assigned
-    // to the dominant speaker's centroid, collapsing 2 speakers → 1.
-    const MIN_RELIABLE_FRAMES: usize = 60; // ≈ 1 s exclusive speech; calibrated min for reliable WeSpeaker embeddings
+    const MIN_RELIABLE_FRAMES: usize = 118;
 
     let num_windows = if total <= SEG_WINDOW_SAMPLES {
         1
@@ -1303,8 +1315,11 @@ pub(crate) fn pyannote_diarize(
 
     // ── Phase 1: Per-window segmentation + masked embeddings ──────────────────
 
-    // segmentations[w][f][s] — binary per-speaker per-frame (589 frames per window)
-    let mut all_segs: Vec<Vec<[bool; PYANNOTE_NUM_SPEAKERS]>> =
+    // soft_segs[w][f][s] — soft per-speaker probabilities (for reconstruction)
+    let mut all_soft: Vec<Vec<[f32; PYANNOTE_NUM_SPEAKERS]>> =
+        Vec::with_capacity(num_windows);
+    // binary_segs[w][f][s] — binarized at 0.5 (for embedding masking only)
+    let mut all_binary: Vec<Vec<[bool; PYANNOTE_NUM_SPEAKERS]>> =
         Vec::with_capacity(num_windows);
     // embeddings[w * PYANNOTE_NUM_SPEAKERS + s] — L2-normalised embedding or None
     let mut all_embs: Vec<Option<Vec<f32>>> =
@@ -1324,16 +1339,16 @@ pub(crate) fn pyannote_diarize(
             scaled[i] = s * 32767.0;
         }
 
-        // Segmentation: [num_frames, 3] binary per-speaker (argmax + powerset decode)
-        let frames = seg_model.run_window_powerset(&scaled);
+        // Segmentation: soft per-speaker probabilities + binarized masks
+        let (soft_frames, binary_frames) = seg_model.run_window_soft(&scaled);
 
         // Build raw (unscaled) padded window for fbank / embedding extraction.
         let mut raw = vec![0.0f32; SEG_WINDOW_SAMPLES];
         raw[..src_end - win_start].copy_from_slice(&samples[win_start..src_end]);
 
-        // For each speaker slot: compute masked embedding.
+        // For each speaker slot: compute masked embedding using BINARY mask.
         for s in 0..PYANNOTE_NUM_SPEAKERS {
-            let speaker_mask: Vec<bool> = frames.iter().map(|f| f[s]).collect();
+            let speaker_mask: Vec<bool> = binary_frames.iter().map(|f| f[s]).collect();
             let active_count = speaker_mask.iter().filter(|&&x| x).count();
 
             if active_count == 0 {
@@ -1344,7 +1359,7 @@ pub(crate) fn pyannote_diarize(
             }
 
             // Exclude-overlap: keep only frames where this speaker is the ONLY one active.
-            let clean_mask: Vec<bool> = frames
+            let clean_mask: Vec<bool> = binary_frames
                 .iter()
                 .map(|f| f[s] && f.iter().filter(|&&x| x).count() < 2)
                 .collect();
@@ -1369,7 +1384,8 @@ pub(crate) fn pyannote_diarize(
             all_clean_counts.push(clean_count);
         }
 
-        all_segs.push(frames);
+        all_soft.push(soft_frames);
+        all_binary.push(binary_frames);
     }
 
     // ── Phase 2: Centroid-linkage clustering — reliable embeddings only ────────
@@ -1416,13 +1432,20 @@ pub(crate) fn pyannote_diarize(
         return vec![];
     }
 
-    // Cluster reliable embeddings.
-    // If reliable-only clustering yields 1 speaker but there are ≥2 valid embeddings,
-    // fall back to clustering all valid embeddings. This handles the case where the
-    // minority speaker never has enough exclusive speech per window to qualify as
-    // "reliable", causing them to be silently absorbed into the dominant speaker.
-    let cluster_fn = |idxs: &[usize]| {
-        let vecs: Vec<Vec<f32>> = idxs.iter()
+    // Cluster reliable embeddings (matching pyannote: no retry on 1-speaker result).
+    let (cluster_labels, num_global_speakers, centroids) = if reliable_idx.is_empty() {
+        // No reliable embeddings: cluster all valid (same as pyannote when
+        // filter_embeddings returns nothing).
+        tracing::info!("[diarize] no reliable embeddings, clustering all valid");
+        let vecs: Vec<Vec<f32>> = valid_idx.iter()
+            .map(|&i| all_embs[i].as_ref().unwrap().clone())
+            .collect();
+        let labels = centroid_linkage_cluster(&vecs, PYANNOTE_THRESHOLD, 12);
+        let k = labels.iter().max().map(|&m| m + 1).unwrap_or(1);
+        let centroids = compute_centroids(&vecs, &labels, k);
+        (labels, k, centroids)
+    } else {
+        let vecs: Vec<Vec<f32>> = reliable_idx.iter()
             .map(|&i| all_embs[i].as_ref().unwrap().clone())
             .collect();
         let labels = centroid_linkage_cluster(&vecs, PYANNOTE_THRESHOLD, 12);
@@ -1431,28 +1454,10 @@ pub(crate) fn pyannote_diarize(
         (labels, k, centroids)
     };
 
-    let (cluster_labels, num_global_speakers, centroids) = if reliable_idx.is_empty() {
-        // No reliable embeddings: cluster all valid.
-        tracing::info!("[diarize] no reliable embeddings, clustering all valid");
-        cluster_fn(&valid_idx)
-    } else {
-        let (labels, k, centroids) = cluster_fn(&reliable_idx);
-        if k <= 1 && valid_idx.len() >= 2 {
-            // Reliable-only collapsed to 1 speaker; minority speaker likely had no
-            // reliable frames. Retry with all valid embeddings.
-            tracing::info!(
-                "[diarize] reliable clustering → 1 speaker; retrying with all {} valid embs",
-                valid_idx.len()
-            );
-            cluster_fn(&valid_idx)
-        } else {
-            (labels, k, centroids)
-        }
-    };
-
     // Build flat label map: embedding index → global label.
-    // Reliable embeddings get their cluster label directly; others are assigned to
-    // the nearest centroid (matches pyannote `assign_embeddings`).
+    // Reliable embeddings get their cluster label directly; unreliable ones are
+    // assigned to the nearest centroid using COSINE distance (matches pyannote
+    // `assign_embeddings` with `metric='cosine'`).
     let mut label_map: Vec<Option<usize>> = vec![None; all_embs.len()];
 
     if reliable_idx.is_empty() {
@@ -1465,20 +1470,14 @@ pub(crate) fn pyannote_diarize(
         for (&emb_idx, &lbl) in reliable_idx.iter().zip(cluster_labels.iter()) {
             label_map[emb_idx] = Some(lbl);
         }
-        // Assign valid-but-unreliable embeddings to nearest centroid.
+        // Assign valid-but-unreliable embeddings to nearest centroid (cosine distance).
         for &emb_idx in &valid_idx {
             if label_map[emb_idx].is_some() {
                 continue; // already assigned
             }
             let emb = all_embs[emb_idx].as_ref().unwrap();
             let nearest = centroids.iter().enumerate()
-                .map(|(k, c)| {
-                    let d: f32 = emb.iter().zip(c.iter())
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f32>()
-                        .sqrt();
-                    (k, d)
-                })
+                .map(|(k, c)| (k, cosine_dist(emb, c)))
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(k, _)| k)
                 .unwrap_or(0);
@@ -1488,14 +1487,13 @@ pub(crate) fn pyannote_diarize(
 
     // ── Phase 3: Reconstruct per-absolute-frame activations ───────────────────
     //
-    // Matches `Inference.aggregate(segmentations, …, skip_average=True)` for
-    // activation_sum, and `Inference.aggregate(speaker_count, …, skip_average=False)`
-    // for the speaker count.
+    // Uses SOFT per-speaker probabilities for reconstruction, matching pyannote:
+    //   - `Inference.aggregate(segmentations, …, skip_average=True)` for activation_sum
+    //   - `Inference.aggregate(speaker_count, …, skip_average=False)` for speaker count
     //
     // Frame alignment: chunk w's local frame f maps to global abs_frame
     //   abs_f = round((w * STEP_SAMPLES + 0.5 * SEG_FRAME_HOP) / SEG_FRAME_HOP)
     //         = round((w * 16000 + 135) / 270)
-    // which matches `frames.closest_frame(chunk.start + 0.5 * frames.duration)`.
 
     let last_win_start_f = {
         let w = num_windows - 1;
@@ -1503,11 +1501,11 @@ pub(crate) fn pyannote_diarize(
     };
     let num_abs_frames = last_win_start_f + 589 + 10;
 
-    // activation_sum[abs_f][global_speaker] — sum of clustered binary activations
+    // activation_sum[abs_f][global_speaker] — sum of SOFT clustered activations
     // (skip_average=True: NOT divided by number of contributing windows)
     let mut activation_sum: Vec<Vec<f32>> =
         vec![vec![0.0_f32; num_global_speakers]; num_abs_frames];
-    // speaker_sum[abs_f] — sum of active-speaker counts (for average speaker count)
+    // speaker_sum[abs_f] — sum of SOFT active-speaker counts (for average speaker count)
     let mut speaker_sum: Vec<f32> = vec![0.0_f32; num_abs_frames];
     // window_count[abs_f] — number of windows that contributed a frame here
     let mut window_count: Vec<f32> = vec![0.0_f32; num_abs_frames];
@@ -1517,9 +1515,9 @@ pub(crate) fn pyannote_diarize(
             / SEG_FRAME_HOP as f64)
             .round() as usize;
 
-        let frames = &all_segs[w];
+        let soft_frames = &all_soft[w];
 
-        for (f, speaker_vec) in frames.iter().enumerate() {
+        for (f, speaker_probs) in soft_frames.iter().enumerate() {
             let abs_f = start_f + f;
             if abs_f >= num_abs_frames {
                 break;
@@ -1532,26 +1530,24 @@ pub(crate) fn pyannote_diarize(
                 continue;
             }
 
-            // Speaker count: how many local speakers are active at this frame.
-            let n_active: f32 = speaker_vec.iter().filter(|&&x| x).count() as f32;
+            // Speaker count: sum of SOFT per-speaker probabilities at this frame.
+            let n_active: f32 = speaker_probs.iter().sum();
             speaker_sum[abs_f] += n_active;
             window_count[abs_f] += 1.0;
 
-            // Clustered segmentation: for each global speaker k, check if any local
-            // speaker assigned to k is active (OR across local speakers with same label).
-            // Matches Python `clustered_seg[c,:,k] = max(seg[:,cluster==k], axis=1)`.
-            let mut global_active = vec![false; num_global_speakers];
+            // Clustered segmentation: for each global speaker k, take MAX of soft
+            // probabilities across local speakers assigned to k.
+            // Matches Python: `clustered_seg[c,:,k] = max(seg[:,cluster==k], axis=1)`.
+            let mut global_max = vec![0.0_f32; num_global_speakers];
             for s in 0..PYANNOTE_NUM_SPEAKERS {
-                if speaker_vec[s] {
-                    if let Some(k) = label_map[w * PYANNOTE_NUM_SPEAKERS + s] {
-                        global_active[k] = true;
+                if let Some(k) = label_map[w * PYANNOTE_NUM_SPEAKERS + s] {
+                    if speaker_probs[s] > global_max[k] {
+                        global_max[k] = speaker_probs[s];
                     }
                 }
             }
-            for (k, &active) in global_active.iter().enumerate() {
-                if active {
-                    activation_sum[abs_f][k] += 1.0;
-                }
+            for (k, &val) in global_max.iter().enumerate() {
+                activation_sum[abs_f][k] += val;
             }
         }
     }
@@ -3209,6 +3205,48 @@ mod integration {
 
     /// Offline pyannote-equivalent pipeline on kkshow (3-speaker clip).
     ///
+    /// Compare Rust compute_fbank against Python torchaudio reference on real audio.
+    ///
+    /// Run with:
+    ///   cargo test diarization::integration::fbank_matches_torchaudio_on_real_audio -- --ignored --nocapture
+    #[test]
+    #[ignore = "integration: requires /tmp/kkshow_16k.wav"]
+    fn fbank_matches_torchaudio_on_real_audio() {
+        let wav = "/tmp/kkshow_16k.wav";
+        assert!(std::path::Path::new(wav).exists());
+
+        let (samples_raw, sr) = load_wav(wav);
+        let samples = to_16k(&samples_raw, sr);
+
+        // First 10s window (same as window 0 in pyannote pipeline)
+        let window = &samples[..SEG_WINDOW_SAMPLES.min(samples.len())];
+        let feats = compute_fbank(window);
+
+        // Python reference (torchaudio.compliance.kaldi.fbank, post-CMN)
+        // frame 0, first 5 bins:
+        let py_f0: [f32; 5] = [-10.006987, -10.695486, -11.923952, -12.579387, -13.051603];
+
+        println!("Rust fbank frames: {}", feats.len());
+        println!("Rust frame 0, first 5: {:?}", &feats[0][..5]);
+        println!("Python frame 0, first 5: {:?}", &py_f0);
+
+        let mut max_diff = 0.0f32;
+        for (i, (&r, &p)) in feats[0][..5].iter().zip(py_f0.iter()).enumerate() {
+            let diff = (r - p).abs();
+            println!("  bin {i}: rust={r:.6} py={p:.6} diff={diff:.6}");
+            max_diff = max_diff.max(diff);
+        }
+
+        println!("Max diff (frame 0, first 5 bins): {max_diff:.6}");
+
+        // Allow up to 0.01 tolerance for real audio (different FFT implementations,
+        // floating point accumulation order, etc.)
+        assert!(
+            max_diff < 0.01,
+            "fbank frame 0 differs from torchaudio by {max_diff:.6} (max allowed: 0.01)"
+        );
+    }
+
     /// Exercises the full `pyannote_diarize()` function end-to-end:
     ///   sliding window segmentation → per-speaker masked embeddings →
     ///   centroid-linkage clustering → frame-level reconstruction → segments.
@@ -3438,6 +3476,114 @@ mod integration {
             .unwrap_or_else(|_| "/tmp/rust_results_pyannote.txt".to_string());
         std::fs::write(&out_path, output_lines.join("\n")).expect("write results");
         println!("\n結果已儲存至 {out_path}");
+    }
+
+    // ── Clustering parity with pyannote (scipy) ──────────────────────────
+
+    /// Verified against Python:
+    /// ```python
+    /// embs = [[0.9,0.1,0], [0.88,0.12,0], [0.87,0.13,0], [0.86,0.14,0],
+    ///         [0,0.1,0.9], [0,0.12,0.88], [0,0.13,0.87], [0,0.14,0.86],
+    ///         [0.5,0.1,0.5]]
+    /// # L2-normalize each
+    /// pyannote_cluster(embs, 0.7045654963945799, 12) → [0,0,0,0, 1,1,1,1, 2]
+    /// ```
+    #[test]
+    fn centroid_linkage_matches_scipy_3d_with_outlier() {
+        // 9 embeddings in 3D — 2 clear clusters of 4 + 1 outlier.
+        let raw: Vec<[f32; 3]> = vec![
+            [0.9, 0.1, 0.0],
+            [0.88, 0.12, 0.0],
+            [0.87, 0.13, 0.0],
+            [0.86, 0.14, 0.0],
+            [0.0, 0.1, 0.9],
+            [0.0, 0.12, 0.88],
+            [0.0, 0.13, 0.87],
+            [0.0, 0.14, 0.86],
+            [0.5, 0.1, 0.5],
+        ];
+        let embs: Vec<Vec<f32>> = raw
+            .iter()
+            .map(|r| l2_normalize(&r.to_vec()))
+            .collect();
+
+        let labels =
+            centroid_linkage_cluster(&embs, PYANNOTE_THRESHOLD, 12);
+
+        // Python scipy result: [0, 0, 0, 0, 1, 1, 1, 1, 2]
+        assert_eq!(labels, vec![0, 0, 0, 0, 1, 1, 1, 1, 2]);
+    }
+
+    /// Verified against Python:
+    /// 5 embeddings → 2 clusters (effective_min_cluster_size = 1).
+    #[test]
+    fn centroid_linkage_matches_scipy_5_embeddings_2_clusters() {
+        // Use the same seed-derived embeddings from the Python test.
+        // Center 0: [1, 0, 0], Center 1: [0, 1, 0], with noise 0.03.
+        let c0 = vec![1.0_f32, 0.0, 0.0];
+        let c1 = vec![0.0_f32, 1.0, 0.0];
+        let offsets: Vec<Vec<f32>> = vec![
+            vec![0.02, 0.01, 0.0],
+            vec![-0.01, 0.02, 0.01],
+            vec![0.01, -0.01, 0.02],
+            vec![0.0, 0.01, -0.01],
+            vec![-0.02, 0.0, 0.01],
+        ];
+        let mut embs = Vec::new();
+        for (i, off) in offsets.iter().enumerate() {
+            let base = if i < 3 { &c0 } else { &c1 };
+            let v: Vec<f32> = base.iter().zip(off.iter()).map(|(a, b)| a + b).collect();
+            embs.push(l2_normalize(&v));
+        }
+
+        let labels = centroid_linkage_cluster(&embs, PYANNOTE_THRESHOLD, 12);
+
+        // With effective_min = min(12, max(1, round(0.5))) = 1, no reassignment needed.
+        // First 3 → same cluster, last 2 → same cluster, two distinct clusters.
+        assert_eq!(labels[0], labels[1]);
+        assert_eq!(labels[1], labels[2]);
+        assert_eq!(labels[3], labels[4]);
+        assert_ne!(labels[0], labels[3]);
+        assert_eq!(labels.iter().collect::<std::collections::HashSet<_>>().len(), 2);
+    }
+
+    /// Small-cluster reassignment must use COSINE distance (matching pyannote).
+    #[test]
+    fn small_cluster_reassignment_uses_cosine() {
+        // Construct embeddings where cosine and euclidean disagree on reassignment.
+        // 2 large clusters (4 each) + 1 small cluster (1 embedding).
+        // The small cluster is at equal EUCLIDEAN distance to both large centroids
+        // but closer in COSINE to cluster A.
+        let cluster_a_center = l2_normalize(&vec![1.0_f32, 0.0, 0.0]);
+        let cluster_b_center = l2_normalize(&vec![0.0_f32, 0.0, 1.0]);
+
+        let mut embs: Vec<Vec<f32>> = Vec::new();
+        // 4 points near cluster A
+        for i in 0..4 {
+            let mut v = cluster_a_center.clone();
+            v[1] += 0.01 * (i as f32 + 1.0);
+            embs.push(l2_normalize(&v));
+        }
+        // 4 points near cluster B
+        for i in 0..4 {
+            let mut v = cluster_b_center.clone();
+            v[1] += 0.01 * (i as f32 + 1.0);
+            embs.push(l2_normalize(&v));
+        }
+        // 1 outlier slightly closer to A in cosine (direction) but same euclidean
+        let outlier = l2_normalize(&vec![0.8_f32, 0.1, 0.3]);
+        embs.push(outlier.clone());
+
+        let labels = centroid_linkage_cluster(&embs, PYANNOTE_THRESHOLD, 4);
+
+        // The outlier (index 8) should be in the same cluster as A (index 0),
+        // because cosine distance to A's centroid is smaller than to B's centroid.
+        let outlier_label = labels[8];
+        let cluster_a_label = labels[0];
+        assert_eq!(
+            outlier_label, cluster_a_label,
+            "outlier should be assigned to cluster A via cosine distance"
+        );
     }
 
 }

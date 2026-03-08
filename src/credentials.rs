@@ -28,11 +28,12 @@ pub fn save(provider: &str, key: &str) -> Result<(), String> {
 
     // Try Data Protection Keychain. Track whether the entitlement is available so
     // we know whether the CLI write below is the primary store or just a backup.
-    let dp_ok = match {
+    let dp_result = {
         let mut opts = PasswordOptions::new_generic_password(&keychain_service(provider), SERVICE);
         opts.use_protected_keychain();
         set_generic_password_options(key.as_bytes(), opts)
-    } {
+    };
+    let dp_ok = match dp_result {
         Ok(()) => true,
         Err(e) if e.code() == ERR_DUPLICATE => {
             // Item already exists — delete then re-add with the updated value.

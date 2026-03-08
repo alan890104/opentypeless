@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(unix)]
-use libc;
+extern crate libc;
 
 /// Load an API key, checking the in-memory cache first before falling back
 /// to the credential store.
@@ -1323,6 +1323,7 @@ pub fn download_llm_model(app: AppHandle, state: State<'_, AppState>) -> Result<
 
 #[tauri::command]
 pub fn list_polish_models(state: State<'_, AppState>) -> Vec<PolishModelInfo> {
+    let system = crate::whisper_models::detect_system_info();
     let (active_model, recommended) = state
         .settings
         .lock()
@@ -1337,7 +1338,7 @@ pub fn list_polish_models(state: State<'_, AppState>) -> Vec<PolishModelInfo> {
         .unwrap_or_default();
     polisher::PolishModel::all()
         .iter()
-        .map(|m| PolishModelInfo::from_model(m, &active_model, &recommended))
+        .map(|m| PolishModelInfo::from_model(m, &active_model, &recommended, &system))
         .collect()
 }
 
@@ -3099,7 +3100,7 @@ pub async fn polish_meeting_note(
 
 Summarize the transcript above. Generate:
 1. A concise title (max 60 chars)
-2. A Markdown summary with sections: Key Points, Action Items, Decisions. Omit empty sections.
+2. A Markdown summary: use ## headings for section titles (Key Points, Action Items, Decisions). Omit empty sections. Use bullet points (- ) for all items within each section.
 
 Return ONLY a JSON object: {{"title": "...", "summary": "..."}}
 Write in {lang_name}."#
@@ -3112,10 +3113,14 @@ Write in {lang_name}."#
             system_prompt,
             &user_text,
             &state.http_client,
-            Some(4096),
+            Some(8192),
         )?;
 
-        Ok::<_, String>(parse_polish_json(&result, &fallback_title))
+        let parsed = parse_polish_json(&result, &fallback_title);
+        Ok::<_, String>(PolishedMeetingNote {
+            title: crate::maybe_convert_zh(&parsed.title, &stt_language),
+            summary: crate::maybe_convert_zh(&parsed.summary, &stt_language),
+        })
     })
     .await
     .map_err(|e| format!("Polish task failed: {}", e))??;
@@ -3248,7 +3253,7 @@ fn free_space(path: &std::path::Path) -> u64 {
     };
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(cstr.as_ptr(), &mut stat) } == 0 {
-        (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64)
+        (stat.f_bavail as u64).saturating_mul(stat.f_frsize)
     } else {
         0
     }

@@ -10,6 +10,9 @@ use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::meeting_notes;
+
+type ImportTranscribeFn =
+    Box<dyn FnMut(&[f32], f64, &str) -> (String, Vec<meeting_notes::WordTs>) + Send>;
 use crate::settings;
 
 /// Decode an audio file to mono f32 samples.
@@ -254,9 +257,7 @@ fn run_import_inner(app: &AppHandle, file_path: &str) -> Result<String, String> 
 
     // ── Step 5: Build transcribe closure ──
     // Returns (text, word_timestamps).
-    let mut transcribe: Box<
-        dyn FnMut(&[f32], f64, &str) -> (String, Vec<meeting_notes::WordTs>) + Send,
-    > = match stt_config.mode {
+    let mut transcribe: ImportTranscribeFn = match stt_config.mode {
         crate::stt::SttMode::Local => match stt_config.local_engine {
             crate::stt::LocalSttEngine::Qwen3Asr => {
                 let model = stt_config.qwen3_asr_model.clone();

@@ -25,6 +25,12 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Closure that transcribes a VAD chunk into WAL segments.
+///
+/// Parameters: `(samples_16khz, start_secs, end_secs, prev_context)`.
+pub(crate) type MeetingTranscribeFn =
+    Box<dyn FnMut(&[f32], f64, f64, &str) -> Vec<crate::meeting_notes::WalSegment> + Send + 'static>;
+
 /// Segment types passed from segmenter to worker.
 enum Segment {
     Tick { samples: Vec<f32>, start_secs: f64, end_secs: f64 },
@@ -70,6 +76,8 @@ fn persist_and_emit(
                     "delta": segment.text,
                     "speaker": segment.speaker,
                     "duration_secs": duration,
+                    "start": segment.start,
+                    "end": segment.end,
                 }),
             );
         }
@@ -86,12 +94,9 @@ fn run_meeting_worker(
     app: AppHandle,
     session_id: u64,
     label: &str,
+    language: &str,
     rx: mpsc::Receiver<Segment>,
-    mut transcribe: Box<
-        dyn FnMut(&[f32], f64, f64, &str) -> Vec<crate::meeting_notes::WalSegment>
-            + Send
-            + 'static,
-    >,
+    mut transcribe: MeetingTranscribeFn,
 ) {
     let state = app.state::<crate::AppState>();
     let history_dir = crate::settings::history_dir();
@@ -143,8 +148,11 @@ fn run_meeting_worker(
         // VAD-filtered time; diarization boundaries in raw time). The segmenter's
         // coarse VAD gate ensures chunks are speech-dominant; any residual silence
         // is handled gracefully by all three STT backends.
-        let wal_segments: Vec<crate::meeting_notes::WalSegment> =
+        let mut wal_segments: Vec<crate::meeting_notes::WalSegment> =
             transcribe(&samples, start_secs, end_secs, &prev_text);
+        for seg in &mut wal_segments {
+            seg.text = crate::maybe_convert_zh(&seg.text, language);
+        }
 
         // Post-transcription session check (transcription may take 10–60s).
         let current_session = state.meeting_session.load(Ordering::SeqCst);
@@ -275,7 +283,7 @@ fn run_meeting_segmenter(
         }
 
         // Send segment on silence (≥ 2 s) or max segment length exceeded.
-        let force_flush = max_segment_samples.map_or(false, |max| chunk_buf.len() >= max);
+        let force_flush = max_segment_samples.is_some_and(|max| chunk_buf.len() >= max);
         if ((silence_count >= 1 && had_speech_since_reset) || force_flush)
             && !chunk_buf.is_empty()
         {
@@ -332,11 +340,8 @@ pub(crate) fn run_meeting_feeder(
     session_id: u64,
     label: &str,
     max_segment_samples: Option<usize>,
-    transcribe: Box<
-        dyn FnMut(&[f32], f64, f64, &str) -> Vec<crate::meeting_notes::WalSegment>
-            + Send
-            + 'static,
-    >,
+    language: String,
+    transcribe: MeetingTranscribeFn,
 ) {
     let (tx, rx) = mpsc::channel::<Segment>();
 
@@ -349,7 +354,7 @@ pub(crate) fn run_meeting_feeder(
     let label_owned = label.to_string();
     let worker_app = app.clone();
     let worker = std::thread::spawn(move || {
-        run_meeting_worker(worker_app, session_id, &label_owned, rx, transcribe);
+        run_meeting_worker(worker_app, session_id, &label_owned, &language, rx, transcribe);
     });
 
     run_meeting_segmenter(&app, session_id, label, max_segment_samples, tx, &audio_note_id);

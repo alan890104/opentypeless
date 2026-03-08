@@ -42,6 +42,18 @@ use stt::{SttConfig, SttMode};
 
 const MAX_RECORDING_SECS: u64 = 120;
 
+/// Convert Simplified Chinese → Traditional Chinese when the configured
+/// language targets a Traditional Chinese locale. No-op for all other locales.
+pub(crate) fn maybe_convert_zh(text: &str, language: &str) -> String {
+    let variant = match language {
+        "zh-TW" => zhconv::Variant::ZhTW,
+        "zh-HK" => zhconv::Variant::ZhHK,
+        "zh-MO" => zhconv::Variant::ZhMO,
+        _ => return text.to_string(),
+    };
+    zhconv::zhconv(text, variant)
+}
+
 // ── App State ───────────────────────────────────────────────────────────────
 
 pub struct AppState {
@@ -366,6 +378,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
                     (text, None, None)
                 };
                 let text = final_text;
+                let text = crate::maybe_convert_zh(&text, &stt_language);
 
                 if let Some(main_win) = app_handle.get_webview_window("main") {
                     let _ = main_win.emit("transcription-result", &text);
@@ -902,6 +915,9 @@ pub fn run() {
                 let log_dir = logs_dir();
                 let _ = std::fs::create_dir_all(&log_dir);
 
+                // Filter: INFO for everything, WARN+ for ORT (suppresses BFCArena spam).
+                let ort_filter = tracing_subscriber::EnvFilter::new("info,ort::logging=warn");
+
                 #[cfg(debug_assertions)]
                 {
                     // Dev: write to stderr so `cargo tauri dev` shows logs in the terminal.
@@ -909,6 +925,7 @@ pub fn run() {
                         .with_writer(std::io::stderr)
                         .with_ansi(true)
                         .with_target(false)
+                        .with_env_filter(ort_filter)
                         .try_init()
                     {
                         eprintln!("[Sumi] Logger init failed: {}", e);
@@ -925,6 +942,7 @@ pub fn run() {
                         .with_writer(non_blocking)
                         .with_ansi(false)
                         .with_target(false)
+                        .with_env_filter(ort_filter)
                         .try_init()
                     {
                         Ok(()) => {
@@ -966,6 +984,12 @@ pub fn run() {
                 let dir = models_dir();
                 std::thread::spawn(move || cleanup_obsolete_models(&dir));
             }
+
+            // Download any missing infrastructure models (VAD + diarization) in the
+            // background.  Idempotent — each file is skipped when already present.
+            // Runs on every launch so existing users who onboarded before the
+            // diarization feature was added receive the models automatically.
+            commands::start_infra_downloads(app.handle().clone());
 
             // The mic stream is pre-opened in a background thread shortly after
             // startup (see below) so the first hotkey press has zero latency.
@@ -1291,7 +1315,7 @@ pub fn run() {
                         // atomically — do_start_recording Step 3 also holds
                         // this lock when setting is_recording=true, so the two
                         // operations are mutually exclusive (no TOCTOU window).
-                        if let Ok(mut at) = state.audio_thread.lock() {
+                        if let Ok(at) = state.audio_thread.lock() {
                             if state.is_recording.load(Ordering::SeqCst)
                                 || state.meeting_active.load(Ordering::SeqCst)
                                 || state.reconnecting.load(Ordering::SeqCst)
@@ -1312,15 +1336,19 @@ pub fn run() {
                                 _ => {}
                             }
                             tracing::info!(
-                                "Idle mic timeout ({}s) — closing mic stream",
+                                "Idle mic timeout ({}s) — pausing mic stream",
                                 timeout_secs
                             );
-                            // Set mic_available=false BEFORE stopping the
+                            // Set mic_available=false BEFORE pausing the
                             // stream so a concurrent do_start_recording
                             // sees the unavailable flag immediately.
                             state.mic_available.store(false, Ordering::SeqCst);
-                            if let Some(ctrl) = at.take() {
-                                ctrl.stop();
+                            // Pause rather than destroy: CoreAudio stops
+                            // capturing (mic indicator disappears) but the
+                            // AudioUnit config is preserved, avoiding the
+                            // sample-rate mismatch bug on re-init.
+                            if let Some(ref ctrl) = *at {
+                                ctrl.pause();
                             }
                             // Reset idle clock so a hot-plug reconnect
                             // doesn't immediately re-trigger a close.
@@ -1782,7 +1810,7 @@ pub fn run() {
                                         if let Some(overlay) = app.get_webview_window("overlay") {
                                             let _ = overlay.emit("recording-status", "error");
                                         }
-                                        hide_overlay_delayed(&app, 1500);
+                                        hide_overlay_delayed(app, 1500);
                                     }
                                 }
                             } else {

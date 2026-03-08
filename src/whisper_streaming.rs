@@ -343,10 +343,10 @@ pub(crate) fn transcribe_meeting_chunk<'a>(
 pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, session_id: u64) {
     use crate::meeting_notes::WalSegment;
 
+    let language_for_feeder = language.clone();
     let app_for_closure = app.clone();
-    let transcribe: Box<
-        dyn FnMut(&[f32], f64, f64, &str) -> Vec<WalSegment> + Send + 'static,
-    > = Box::new(move |samples, start_secs, end_secs, prev_text| {
+    let transcribe: crate::meeting_feeder::MeetingTranscribeFn =
+        Box::new(move |samples, start_secs, end_secs, prev_text| {
         let state = app_for_closure.state::<crate::AppState>();
 
         // Phase 1: diarization sub-segmentation (segmentation model + online cluster).
@@ -453,6 +453,7 @@ pub(crate) fn run_whisper_meeting_feeder_loop(app: AppHandle, language: String, 
         session_id,
         "whisper-meeting",
         Some(120 * 16_000),
+        language_for_feeder,
         transcribe,
     );
 }

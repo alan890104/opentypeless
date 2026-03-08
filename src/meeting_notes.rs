@@ -2,7 +2,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
-use hound;
 
 // ── WAL segment types ─────────────────────────────────────────────────────────
 //

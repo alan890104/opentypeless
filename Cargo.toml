@@ -41,8 +41,9 @@ ort = { version = "=2.0.0-rc.10", features = ["ndarray", "coreml"] } # pinned: r
 ndarray = "0.16"
 rustfft = "6"
 url = "2"
+zhconv = "0.4"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tracing-appender = "0.2"
 
 [target.'cfg(unix)'.dependencies]
