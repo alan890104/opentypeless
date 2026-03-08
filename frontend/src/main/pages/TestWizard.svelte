@@ -383,6 +383,39 @@
   // ── Step 5: Polish Readiness Check ──
 
   let polishReady = $state(false);
+  let polishPressedKeys = $state(new Set<string>());
+
+  function polishKeydown(e: KeyboardEvent) {
+    e.preventDefault();
+    const held = eventToHotkeyParts(e);
+    const parts = (editHotkey || hotkey).split('+');
+    const newPressed = new Set(polishPressedKeys);
+    parts.forEach((part) => {
+      if (held.has(part)) newPressed.add(part);
+    });
+    polishPressedKeys = newPressed;
+  }
+
+  function polishKeyup(e: KeyboardEvent) {
+    e.preventDefault();
+    const held = eventToHotkeyParts(e);
+    const parts = (editHotkey || hotkey).split('+');
+    const newPressed = new Set(polishPressedKeys);
+    parts.forEach((part) => {
+      if (!held.has(part)) newPressed.delete(part);
+    });
+    polishPressedKeys = newPressed;
+  }
+
+  function isPolishKeyPressed(part: string): boolean {
+    return polishPressedKeys.has(part);
+  }
+
+  function cleanupPolishCheck() {
+    document.removeEventListener('keydown', polishKeydown);
+    document.removeEventListener('keyup', polishKeyup);
+    polishPressedKeys = new Set();
+  }
 
   async function checkPolishReady() {
     const pc = getPolishConfig();
@@ -403,6 +436,9 @@
   }
 
   async function setupPolishCheck() {
+    cleanupPolishCheck();
+    document.addEventListener('keydown', polishKeydown);
+    document.addEventListener('keyup', polishKeyup);
     await checkPolishReady();
   }
 
@@ -492,6 +528,7 @@
     cleanupHotkeyTest();
     cleanupGeneral();
     cleanupGmail();
+    cleanupPolishCheck();
     cleanupEditTest();
     setTestMode(false).catch(() => {});
   }
@@ -769,7 +806,7 @@
             {#each (editHotkey || hotkey).split('+') as part}
               {@const sym = MODIFIER_SYMBOLS[part]}
               {@const label = sym ?? part.replace(/^Key/, '').replace(/^Digit/, '')}
-              <kbd class:accent={!sym}>{label}</kbd>
+              <kbd class:accent={!sym} class:pressed={isPolishKeyPressed(part)}>{label}</kbd>
             {/each}
           </div>
         </div>
