@@ -6,14 +6,14 @@ use whisper_rs::{FullParams, SamplingStrategy};
 
 // ══ WhisperPreviewFeeder ══════════════════════════════════════════════════════
 
-const MAX_BUFFER_SAMPLES: usize = 30 * 16_000; // 30 s at 16 kHz
-const MIN_NEW_SAMPLES: usize = 3 * 16_000; // 3 s trigger threshold
+const MAX_BUFFER_SAMPLES: usize = 10 * 16_000; // 10 s at 16 kHz
+const MIN_NEW_SAMPLES: usize = 2 * 16_000; // 2 s trigger threshold
 const MAX_BACKOFF: u32 = 16;
 
 /// Sliding-window live-preview accumulator inspired by scribble's
 /// `BufferedSegmentTranscriber`.
 ///
-/// Buffers 16 kHz audio up to 30 s in a rolling window and applies exponential
+/// Buffers 16 kHz audio up to 10 s in a rolling window and applies exponential
 /// back-off to reduce inference frequency when the output stabilises (i.e. the
 /// speaker has paused or the model has "caught up").
 pub struct WhisperPreviewFeeder {
@@ -49,7 +49,7 @@ impl WhisperPreviewFeeder {
         self.new_samples_since_last_infer >= MIN_NEW_SAMPLES * self.backoff as usize
     }
 
-    /// Run inference on the current rolling buffer (last 30 s of audio).
+    /// Run inference on the current rolling buffer (last 10 s of audio).
     ///
     /// `ctx_guard` must be obtained via `try_lock` (see `run_whisper_preview_loop`)
     /// so the preview feeder never blocks the final batch transcription in
@@ -221,43 +221,6 @@ pub(crate) fn run_whisper_preview_loop(app: AppHandle, language: String, session
                 tracing::warn!("[whisper-preview] inference error: {}", e);
             }
             _ => {}
-        }
-    }
-
-    // Final inference pass: run one last inference on whatever audio has
-    // accumulated since the last tick so the overlay shows the complete
-    // transcript before the "transcribing" status clears partialText.
-    // Skip if session has already advanced (zombie feeder).
-    //
-    // Trailing audio is read BEFORE the is_empty check: if the feeder buffer
-    // is empty but audio arrived in state.buffer after the last tick, we still
-    // want to run inference on it.
-    if state.whisper_preview_session.load(Ordering::SeqCst) == session_id {
-        let trailing_raw: Vec<f32> = {
-            let buf = state.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            let tail = last_tail.min(buf.len());
-            buf[tail..].to_vec()
-        };
-        if !trailing_raw.is_empty() {
-            let trailing_16k = if sr != 16000 {
-                crate::audio::resample(&trailing_raw, sr, 16000)
-            } else {
-                trailing_raw
-            };
-            feeder.push_samples(&trailing_16k);
-        }
-
-        if !feeder.buffer.is_empty() {
-            if let Ok(ctx_guard) = state.whisper_ctx.try_lock() {
-                if ctx_guard.is_some() {
-                    if let Ok(text) = feeder.infer(&ctx_guard, &language) {
-                        if !text.is_empty() {
-                            tracing::debug!("[whisper-preview] final partial: {:?}", text);
-                            crate::emit_transcription_partial(&app, &text);
-                        }
-                    }
-                }
-            }
         }
     }
 
