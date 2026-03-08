@@ -449,5 +449,6 @@
   "model.delete": "Delete",
   "model.deleteConfirm": "Delete {name}? This will free {size} of disk space.",
   "model.deleteActiveWarning": " This model is currently active and will be unloaded.",
-  "model.deleted": "Deleted, freed {size}"
+  "model.deleted": "Deleted, freed {size}",
+  "meeting.processingAudio": "正在处理音频…"
 }
