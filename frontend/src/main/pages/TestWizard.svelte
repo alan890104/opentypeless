@@ -227,12 +227,12 @@
 
   function hotkeyKeyup(e: KeyboardEvent) {
     e.preventDefault();
-    const held = eventToHotkeyParts(e);
-    const parts = hotkey.split('+');
     const newPressed = new Set(pressedKeys);
-    parts.forEach((part) => {
-      if (!held.has(part)) newPressed.delete(part);
-    });
+    newPressed.delete(e.code);
+    if (!e.altKey) newPressed.delete('Alt');
+    if (!e.ctrlKey) newPressed.delete('Control');
+    if (!e.shiftKey) newPressed.delete('Shift');
+    if (!e.metaKey) newPressed.delete('Super');
     pressedKeys = newPressed;
   }
 
@@ -398,12 +398,12 @@
 
   function polishKeyup(e: KeyboardEvent) {
     e.preventDefault();
-    const held = eventToHotkeyParts(e);
-    const parts = (editHotkey || hotkey).split('+');
     const newPressed = new Set(polishPressedKeys);
-    parts.forEach((part) => {
-      if (!held.has(part)) newPressed.delete(part);
-    });
+    newPressed.delete(e.code);
+    if (!e.altKey) newPressed.delete('Alt');
+    if (!e.ctrlKey) newPressed.delete('Control');
+    if (!e.shiftKey) newPressed.delete('Shift');
+    if (!e.metaKey) newPressed.delete('Super');
     polishPressedKeys = newPressed;
   }
 
