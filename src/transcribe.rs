@@ -57,7 +57,10 @@ pub fn filter_with_vad(
         tracing::info!("Loading Silero VAD model...");
         let mut ctx_params = WhisperVadContextParams::new();
         ctx_params.set_use_gpu(cfg!(target_os = "macos"));
-        ctx_params.set_n_threads(num_cpus() as _);
+        // Silero VAD processes 512-sample chunks sequentially (LSTM is not
+        // parallelisable). Using multiple threads only adds barrier-sync
+        // overhead on every chunk — set to 1 for best throughput.
+        ctx_params.set_n_threads(1);
         let ctx = WhisperVadContext::new(
             model_path.to_str().ok_or("Invalid VAD model path")?,
             ctx_params,
@@ -138,7 +141,10 @@ pub fn has_speech_vad(
     if needs_reload {
         let mut ctx_params = WhisperVadContextParams::new();
         ctx_params.set_use_gpu(cfg!(target_os = "macos"));
-        ctx_params.set_n_threads(num_cpus() as _);
+        // Silero VAD processes 512-sample chunks sequentially (LSTM is not
+        // parallelisable). Using multiple threads only adds barrier-sync
+        // overhead on every chunk — set to 1 for best throughput.
+        ctx_params.set_n_threads(1);
         match WhisperVadContext::new(
             model_path.to_str().unwrap_or(""),
             ctx_params,
