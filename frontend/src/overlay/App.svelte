@@ -47,7 +47,7 @@
    *    'preparing', 'pasted', 'copied', 'error', 'edited',
    *    'edit_requires_polish', 'meeting_stopped', 'undo'
    */
-  const ACTIVE_PHASES: Phase[] = [
+  const ACTIVE_PHASES: readonly Phase[] = [
     'recording', 'edit_recording', 'meeting_recording',
     'transcribing', 'polishing', 'processing', 'switching',
   ];
