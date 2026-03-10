@@ -127,6 +127,7 @@ pub fn focused_screen_logical_frame() -> Option<(f64, f64, f64, f64, f64)> {
 /// Collection behavior flags for the overlay window.
 const OVERLAY_BEHAVIOR: u64 = 1    // canJoinAllSpaces
                             | 8    // transient
+                            | 16   // stationary (stay visible during Space transitions)
                             | 64   // ignoresCycle
                             | 256; // fullScreenAuxiliary
 

@@ -451,6 +451,16 @@
   // stale text (like "transcribing") when next shown.
   function handleVisibility() {
     if (document.hidden) {
+      // During active recording/processing, state is driven by backend events.
+      // macOS Space switches briefly fire visibilitychange — skip the reset
+      // so we don't interrupt the current phase.
+      const activePhases: Phase[] = [
+        'preparing', 'recording', 'edit_recording', 'meeting_recording',
+        'transcribing', 'polishing', 'processing', 'switching',
+      ];
+      if (activePhases.includes(phase)) {
+        return;
+      }
       setPreparing();
     }
   }
