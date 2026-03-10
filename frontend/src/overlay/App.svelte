@@ -23,6 +23,11 @@
   const UNDO_DURATION = 5000;
   const TIMER_INTERVAL = 200;
   const INTERPOLATION_FACTOR = 0.25;
+  /** Phases actively driven by backend events — do not reset on visibilitychange. */
+  const ACTIVE_PHASES: Phase[] = [
+    'recording', 'edit_recording', 'meeting_recording',
+    'transcribing', 'polishing', 'processing', 'switching',
+  ];
 
   // ── State ──
   type Phase =
@@ -454,11 +459,7 @@
       // During active recording/processing, state is driven by backend events.
       // macOS Space switches briefly fire visibilitychange — skip the reset
       // so we don't interrupt the current phase.
-      const activePhases: Phase[] = [
-        'preparing', 'recording', 'edit_recording', 'meeting_recording',
-        'transcribing', 'polishing', 'processing', 'switching',
-      ];
-      if (activePhases.includes(phase)) {
+      if (ACTIVE_PHASES.includes(phase)) {
         return;
       }
       setPreparing();
