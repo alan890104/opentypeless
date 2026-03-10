@@ -43,6 +43,11 @@
     | 'switching';
 
   /** Phases actively driven by backend events — do not reset on visibilitychange.
+   *  Note: only 'switching' has a 30s safety timeout; the other active phases
+   *  rely on the backend always emitting a terminal event. If the backend is
+   *  killed mid-phase while the overlay is hidden, the next show may display a
+   *  stale state (low risk — the backend emits 'preparing' before every hide).
+   *
    *  Excluded (terminal/short-lived; reset on hide is correct):
    *    'preparing', 'pasted', 'copied', 'error', 'edited',
    *    'edit_requires_polish', 'meeting_stopped',

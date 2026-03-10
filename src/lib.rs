@@ -240,6 +240,20 @@ fn hide_overlay_delayed(app: &AppHandle, delay_ms: u64) {
     });
 }
 
+/// Emit 'preparing' to reset overlay phase, then hide immediately.
+/// Ensures the frontend transitions to idle before visibilitychange can fire.
+fn reset_and_hide_overlay(app: &AppHandle) {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.emit("recording-status", "preparing");
+    }
+    let app_for_hide = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(overlay) = app_for_hide.get_webview_window("overlay") {
+            platform::hide_overlay(&overlay);
+        }
+    });
+}
+
 /// Shared logic: stop recording, transcribe, copy/paste, and hide the overlay.
 fn stop_transcribe_and_paste(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -312,18 +326,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
                         let _ = main_win.emit("voice-rule-transcript", &text);
                     }
                     state.is_processing.store(false, Ordering::SeqCst);
-                    // Emit before hide so the frontend transitions to 'preparing'
-                    // before visibilitychange fires. Ordering is benign even if
-                    // the IPC event arrives after hide.
-                    if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                        let _ = overlay.emit("recording-status", "preparing");
-                    }
-                    let app_for_hide = app_handle.clone();
-                    let _ = app_handle.run_on_main_thread(move || {
-                        if let Some(overlay) = app_for_hide.get_webview_window("overlay") {
-                            platform::hide_overlay(&overlay);
-                        }
-                    });
+                    reset_and_hide_overlay(&app_handle);
                     return;
                 }
 
@@ -504,18 +507,7 @@ fn stop_transcribe_and_paste(app: &AppHandle) {
                 }
                 // Release immediately and hide overlay — nothing to display
                 state.is_processing.store(false, Ordering::SeqCst);
-                // Emit before hide so the frontend transitions to 'preparing'
-                // before visibilitychange fires. Ordering is benign even if
-                // the IPC event arrives after hide.
-                if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                    let _ = overlay.emit("recording-status", "preparing");
-                }
-                let app_for_hide = app_handle.clone();
-                let _ = app_handle.run_on_main_thread(move || {
-                    if let Some(overlay) = app_for_hide.get_webview_window("overlay") {
-                        platform::hide_overlay(&overlay);
-                    }
-                });
+                reset_and_hide_overlay(&app_handle);
                 return;
             }
             Err(e) => {
@@ -700,13 +692,7 @@ fn stop_edit_and_replace(app: &AppHandle) {
                 tracing::info!("Edit-by-voice: no speech detected");
                 state.is_processing.store(false, Ordering::SeqCst);
                 restore_clipboard(&state);
-                // Emit before hide so the frontend transitions to 'preparing'
-                // before visibilitychange fires. Ordering is benign even if
-                // the IPC event arrives after hide.
-                if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                    let _ = overlay.emit("recording-status", "preparing");
-                }
-                hide_overlay_delayed(&app_handle, 0);
+                reset_and_hide_overlay(&app_handle);
             }
             Err(e) => {
                 tracing::error!("Edit-by-voice transcription error: {}", e);
