@@ -694,6 +694,9 @@ fn stop_edit_and_replace(app: &AppHandle) {
                 tracing::info!("Edit-by-voice: no speech detected");
                 state.is_processing.store(false, Ordering::SeqCst);
                 restore_clipboard(&state);
+                if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                    let _ = overlay.emit("recording-status", "preparing");
+                }
                 hide_overlay_delayed(&app_handle, 0);
             }
             Err(e) => {

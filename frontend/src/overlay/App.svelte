@@ -49,7 +49,8 @@
    */
   const ACTIVE_PHASES: readonly Phase[] = [
     'recording', 'edit_recording', 'meeting_recording',
-    'transcribing', 'polishing', 'processing', 'switching',
+    'transcribing', 'polishing', 'processing',
+    'switching', // model-switch in progress — not related to Space switching
   ];
 
   let phase: Phase = $state('preparing');
